@@ -95,8 +95,8 @@ Step-by-Step Guide
 
 <img src="imagesforgettingstarted/8.jpg" alt="drawing" width="400"/>
 
-- Make sure that one of these components are grounded. To do so, right click on the component on the left side and click on **Ground**. 
-- A red indicator should appear next to the name of the component that shows it is grounded.
+- Make sure that one of these components are fixed. To do so, right click on the component on the left side and click on **Pin**. 
+- A red pin icon should appear next to the name of the component that shows it is pinned (fixed) in space. Then select the second component perform a right click and ground it to parent to set up the kinematic chain from parent to child. 
 
 <img src="imagesforgettingstarted/9.jpg" alt="drawing" width="400"/>
 
