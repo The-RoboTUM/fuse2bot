@@ -198,7 +198,8 @@ class MyCreatedHandler(adsk.core.CommandCreatedEventHandler):
             # Set the type of platform to target for building XML
             di = inputs.addDropDownCommandInput('target_platform', 'Target Platform', adsk.core.DropDownStyles.TextListDropDownStyle)
             di = di.listItems
-            di.add('None', True, '')
+            di.add('IsaacSim', True, '')
+            di.add('None', False, '')
             di.add('pyBullet', False, '')
             # di.add('m', False, '') # TODO Add other methods if needed 
 
