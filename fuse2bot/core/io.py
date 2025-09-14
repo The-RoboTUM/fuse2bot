@@ -98,7 +98,10 @@ def component_exporter(exportMgr, newRoot, body_lst, filename):
 
     for body in body_lst:
         if not body.isLightBulbOn: continue
+        if not isinstance(body, adsk.fusion.BRepBody):
+            print("Invalid body:", body)
         tBody = tBrep.copy(body)
+
         newRoot.bRepBodies.add(tBody, bf)
 
     bf.finishEdit()
@@ -189,16 +192,16 @@ class Writer:
             f.write('  <color rgba="0.700 0.700 0.700 1.000"/>\n')
             f.write('</material>\n\n')
 
-                        # --- Isaac Sim correction ---
-            print("Target platform is:", getattr(config, "target_platform", None))
-            if getattr(config, "target_platform", None) == "IsaacSim":
-                f.write('<link name="world_corrected"/>\n')
-                f.write('<joint name="world_to_base" type="fixed">\n')
-                f.write('  <parent link="world_corrected"/>\n')
-                root_name = next(iter(config.links.values())).name
-                f.write(f'  <child link="{root_name}"/>\n')
-                f.write('  <origin xyz="0 0 0" rpy="-1.5708 0 0"/>\n')
-                f.write('</joint>\n\n')
+            # --- Isaac Sim correction ---
+            f.write('<link name="world_corrected"/>\n')
+            f.write('<joint name="world_to_base" type="fixed">\n')
+            f.write('  <parent link="world_corrected"/>\n')
+            root_name = next(iter(config.links.values())).name
+            # sanitize exactly the same way as in your parts.py
+            sanitized_root = root_name.replace(':', '_').replace(' ', '')
+            f.write(f'  <child link="{sanitized_root}"/>\n')
+            f.write('  <origin xyz="0 0 0" rpy="-1.5708 0 0"/>\n')
+            f.write('</joint>\n\n')
 
         self.write_link(config, file_name)
         self.write_joint(file_name, config)
