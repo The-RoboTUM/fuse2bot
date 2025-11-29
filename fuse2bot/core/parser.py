@@ -516,8 +516,8 @@ class Configurator:
                                 xyz=(joint['xyz'][0], joint['xyz'][1], joint['xyz'][2]),
                                 center_of_mass=center_of_mass,
                                 sub_folder=mesh_folder, 
-                                mass=0,
-                                inertia_tensor=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                mass=0.0001,
+                                inertia_tensor=[0.0000001, 0.0000001, 0.0000001, 0.0, 0.0, 0.0],
                                 body_dict = body_dict_urdf,
                                 sub_mesh = self.sub_mesh)
             else:

@@ -184,36 +184,37 @@ class Link:
                           'izz':str(self.inertia_tensor[2]), 'ixy':str(self.inertia_tensor[3]),
                           'iyz':str(self.inertia_tensor[4]), 'ixz':str(self.inertia_tensor[5])}        
         
-        # visual
-        if self.sub_mesh: # if we want to export each as a separate mesh
-            for body_name in self.body_dict[self.name]:
-                # body_name = format_urdf_name(body_name)
+        if 'virtual' not in self.name: 
+            # visual
+            if self.sub_mesh: # if we want to export each as a separate mesh
+                for body_name in self.body_dict[self.name]:
+                    # body_name = format_urdf_name(body_name)
+                    visual = SubElement(link, 'visual')
+                    origin_v = SubElement(visual, 'origin')
+                    origin_v.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
+                    geometry_v = SubElement(visual, 'geometry')
+                    mesh_v = SubElement(geometry_v, 'mesh')
+                    mesh_v.attrib = {'filename':f'package://{self.sub_folder}{body_name}.stl','scale':f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'}
+                    material = SubElement(visual, 'material')
+                    material.attrib = {'name':'silver'}
+            else:
                 visual = SubElement(link, 'visual')
                 origin_v = SubElement(visual, 'origin')
                 origin_v.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
                 geometry_v = SubElement(visual, 'geometry')
                 mesh_v = SubElement(geometry_v, 'mesh')
-                mesh_v.attrib = {'filename':f'package://{self.sub_folder}{body_name}.stl','scale':f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'}
+                mesh_v.attrib = {'filename':f'package://{self.sub_folder}{self.name.replace('_virtual', '')}.stl','scale':f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'}
                 material = SubElement(visual, 'material')
                 material.attrib = {'name':'silver'}
-        else:
-            visual = SubElement(link, 'visual')
-            origin_v = SubElement(visual, 'origin')
-            origin_v.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
-            geometry_v = SubElement(visual, 'geometry')
-            mesh_v = SubElement(geometry_v, 'mesh')
-            mesh_v.attrib = {'filename':f'package://{self.sub_folder}{self.name.replace('_virtual', '')}.stl','scale':f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'}
-            material = SubElement(visual, 'material')
-            material.attrib = {'name':'silver'}
-    
         
-        # collision
-        collision = SubElement(link, 'collision')
-        origin_c = SubElement(collision, 'origin')
-        origin_c.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
-        geometry_c = SubElement(collision, 'geometry')
-        mesh_c = SubElement(geometry_c, 'mesh')
-        mesh_c.attrib = {'filename':'package://' + self.sub_folder + self.name.replace('_virtual', '') + '.stl','scale':'0.001 0.001 0.001'}
+            
+            # collision
+            collision = SubElement(link, 'collision')
+            origin_c = SubElement(collision, 'origin')
+            origin_c.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
+            geometry_c = SubElement(collision, 'geometry')
+            mesh_c = SubElement(geometry_c, 'mesh')
+            mesh_c.attrib = {'filename':'package://' + self.sub_folder + self.name.replace('_virtual', '') + '.stl','scale':'0.001 0.001 0.001'}
 
         rough_string = ElementTree.tostring(link, 'utf-8')
         reparsed = minidom.parseString(rough_string)
