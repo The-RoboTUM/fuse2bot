@@ -132,3 +132,7 @@ Descriptor/.vscode/settings.json
 
 #.vs dir	
 .vs/
+.vscode/
+
+# output directory	
+out/

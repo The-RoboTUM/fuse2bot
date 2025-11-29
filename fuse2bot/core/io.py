@@ -3,6 +3,7 @@ import adsk, adsk.core, adsk.fusion
 from . import parts
 from . import parser
 from . import manager
+from . import utils
 from collections import Counter, defaultdict
 
 def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_mapper, _app):  
@@ -53,7 +54,7 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
         # Create a new exporter in case its a memory thing
         exporter = design.exportManager
 
-        occName = oc.name.replace(':', '_').replace(' ','')
+        occName = utils.format_urdf_name(oc.name)
         
         component_exporter(exporter, newRoot, body_mapper[oc.entityToken], os.path.join(save_dir,f'{occName}'))
 
@@ -65,7 +66,7 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
                 if body.isLightBulbOn:
 
                     # Since there are alot of similar names, we need to store the parent component as well in the filename
-                    body_name = body.name.replace(':','_').replace(' ','')
+                    body_name = utils.format_urdf_name(body.name)
                     body_name_cnt = f'{body_name}_{body_count[body_name]}'
                     body_count[body_name] += 1
 
@@ -148,7 +149,7 @@ class Writer:
             for _, link in config.links.items():  
                 f.write(f'{link.link_xml}\n')
 
-    def write_joint(self, file_name, config):
+    def write_joint(self, file_name, config: parser.Configurator):
         ''' Write joints and transmission information into urdf file_name
             
         Parameters
@@ -165,7 +166,7 @@ class Writer:
                 f.write(f'{joint.joint_xml}\n')
 
 
-    def write_urdf(self, save_dir, config):
+    def write_urdf(self, save_dir, config: parser.Configurator):
         ''' Write each component of the xml structure to file
 
         Parameters
@@ -179,11 +180,12 @@ class Writer:
         save_dir = os.path.join(save_dir,'urdf')
         try: os.mkdir(save_dir)
         except: pass
-        file_name = os.path.join(save_dir, f'{config.name}.urdf')  # the name of urdf file
+        robot_name = utils.format_urdf_name(config.name)
+        file_name = os.path.join(save_dir, f'{robot_name}.urdf')  # the name of urdf file
 
         with open(file_name, mode='w', encoding="utf-8") as f:
             f.write('<?xml version="1.0" ?>\n')
-            f.write(f'<robot name="{config.name}">\n\n')
+            f.write(f'<robot name="{robot_name}">\n\n')
             f.write('<material name="silver">\n')
             f.write('  <color rgba="0.700 0.700 0.700 1.000"/>\n')
             f.write('</material>\n\n')

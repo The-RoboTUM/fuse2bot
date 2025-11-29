@@ -11,6 +11,8 @@ from xml.etree.ElementTree import Element, SubElement
 from xml.etree import ElementTree
 from xml.dom import minidom
 
+from .utils import format_urdf_name
+
 class Joint:
 
     # Defaults for all joints 
@@ -56,17 +58,17 @@ class Joint:
         """
 
         joint = Element('joint')
-        joint.attrib = {'name':self.name.replace(':','_').replace(' ',''), 'type':self.type}
+        joint.attrib = {'name':format_urdf_name(self.name), 'type':self.type}
 
         origin = SubElement(joint, 'origin')
         origin.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
 
         parent = SubElement(joint, 'parent')
-        self.parent = self.parent.replace(':','_').replace(' ','')
+        self.parent = format_urdf_name(self.parent)
         parent.attrib = {'link':self.parent}
 
         child = SubElement(joint, 'child')
-        self.child = self.child.replace(':','_').replace(' ','')
+        self.child = format_urdf_name(self.child)
         child.attrib = {'link':self.child}
 
         if self.type == 'revolute' or self.type == 'continuous' or self.type == 'prismatic':        
@@ -97,18 +99,18 @@ class Joint:
         """        
         
         tran = Element('transmission')
-        tran.attrib = {'name':self.name.replace(':','_').replace(' ','') + '_tran'}
+        tran.attrib = {'name':format_urdf_name(self.name) + '_tran'}
         
         joint_type = SubElement(tran, 'type')
         joint_type.text = 'transmission_interface/SimpleTransmission'
         
         joint = SubElement(tran, 'joint')
-        joint.attrib = {'name':self.name.replace(':','_').replace(' ','')}
+        joint.attrib = {'name':format_urdf_name(self.name)}
         hardwareInterface_joint = SubElement(joint, 'hardwareInterface')
         hardwareInterface_joint.text = 'hardware_interface/EffortJointInterface'
         
         actuator = SubElement(tran, 'actuator')
-        actuator.attrib = {'name':self.name.replace(':','_').replace(' ','') + '_actr'}
+        actuator.attrib = {'name':format_urdf_name(self.name) + '_actr'}
         hardwareInterface_actr = SubElement(actuator, 'hardwareInterface')
         hardwareInterface_actr.text = 'hardware_interface/EffortJointInterface'
         mechanicalReduction = SubElement(actuator, 'mechanicalReduction')
@@ -168,7 +170,7 @@ class Link:
         """
         
         link = Element('link')
-        self.name = self.name.replace(':','_').replace(' ','')
+        self.name = format_urdf_name(self.name)
         link.attrib = {'name':self.name}
         
         #inertial
@@ -185,7 +187,7 @@ class Link:
         # visual
         if self.sub_mesh: # if we want to export each as a separate mesh
             for body_name in self.body_dict[self.name]:
-                # body_name = body_name.replace(':','_').replace(' ','')
+                # body_name = format_urdf_name(body_name)
                 visual = SubElement(link, 'visual')
                 origin_v = SubElement(visual, 'origin')
                 origin_v.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}

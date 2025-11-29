@@ -3,9 +3,11 @@ module to parse fusion file
 '''
 
 import copy
+import time
 import adsk, adsk.core, adsk.fusion
 from . import transforms
 from . import parts
+from . import utils
 from collections import Counter, defaultdict
 
 class Hierarchy:
@@ -401,17 +403,27 @@ class Configurator:
             if 'RigidJointMotion' in joint_type:
                 pass
             else:
-                
-                joint_vector = joint.jointMotion.rotationAxisVector.asArray() 
+                if "RevoluteJointMotion" in joint_type:
+                    joint_vector = joint.jointMotion.rotationAxisVector.asArray() 
+                    joint_limit_max = joint.jointMotion.rotationLimits.maximumValue
+                    joint_limit_min = joint.jointMotion.rotationLimits.minimumValue
+                    
+                    if abs(joint_limit_max - joint_limit_min) == 0:
+                        joint_limit_min = -3.14159
+                        joint_limit_max = 3.14159
+                elif "SliderJointMotion" in joint_type:
+                    # with open(r"C:\Programmieren\RoboTUM\fuse2bot\out\log" + f"{int(time.time())}.txt", "a") as log:
+                    #     log.write(f"Slider has vars: {vars(joint.jointMotion)}\n")
+                    #     log.write(f"Slider has dir: {dir(joint.jointMotion)}\n")
+                    joint_vector = joint.jointMotion.slideDirectionVector.asArray()
+                    joint_limit_max = joint.jointMotion.slideLimits.maximumValue/self.scale
+                    joint_limit_min = joint.jointMotion.slideLimits.minimumValue/self.scale
+                    if joint_limit_max - joint_limit_min <= 0:
+                        raise ValueError("SliderJoint with zero or negative travel detected!")
+                else:
+                    raise ValueError(f'Joint type {joint_type} not supported')
 
-                joint_rot_val = joint.jointMotion.rotationValue
-                joint_limit_max = joint.jointMotion.rotationLimits.maximumValue
-                joint_limit_min = joint.jointMotion.rotationLimits.minimumValue
-                
-                if abs(joint_limit_max - joint_limit_min) == 0:
-                    joint_limit_min = -3.14159
-                    joint_limit_max = 3.14159
-
+                # joint_rot_val = joint.jointMotion.rotationValue
                 # joint_angle = joint.angle.value 
 
                 joint_dict['axis'] = joint_vector
@@ -448,7 +460,7 @@ class Configurator:
         body_count = Counter()
         
         for oc in self.occ:
-            oc_name = oc.name.replace(':','_').replace(' ','')
+            oc_name = utils.format_urdf_name(oc.name)
             # self.body_dict[oc_name] = []
             # body_lst = self.component_map[oc.entityToken].get_flat_body() #gets list of all bodies in the occurrence
 
@@ -462,7 +474,7 @@ class Configurator:
                             duplicate_bodies[body.name] +=1
                         self.body_dict[oc_name].append(body)
 
-                        body_name = body.name.replace(':','_').replace(' ','')
+                        body_name = utils.format_urdf_name(body.name)
                         body_name_cnt = f'{body_name}_{body_count[body_name]}'
                         body_count[body_name] += 1
 
