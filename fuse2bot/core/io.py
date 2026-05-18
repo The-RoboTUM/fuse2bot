@@ -200,9 +200,10 @@ class Writer:
             f.write('  <parent link="world_corrected"/>\n')
             root_name = next(iter(config.links.values())).name
             # sanitize exactly the same way as in your parts.py
-            sanitized_root = root_name.replace(':', '_').replace(' ', '')
+            #sanitized_root = root_name.replace(':', '_').replace(' ', '')
+            sanitized_root = utils.format_urdf_name(root_name)
             f.write(f'  <child link="{sanitized_root}"/>\n')
-            f.write('  <origin xyz="0 0 0" rpy="-1.5708 0 0"/>\n')
+            f.write('  <origin xyz="0 0 0" rpy="1.5708 0 0"/>\n')
             f.write('</joint>\n\n')
 
         self.write_link(config, file_name)
