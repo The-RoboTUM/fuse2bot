@@ -1,7 +1,6 @@
-import os 
-from functools import partial
+import os
 
-import adsk 
+import adsk.fusion
 
 from . import parser
 from . import io
@@ -14,6 +13,24 @@ class Manager:
     root = None 
     design = None
     _app = None
+
+    UNIT_SCALE = {
+        'mm': 0.001,
+        'cm': 0.01,
+        'm': 1.0,
+    }
+
+    INERTIA_ACCURACY = {
+        'Low': adsk.fusion.CalculationAccuracy.LowCalculationAccuracy,
+        'Medium': adsk.fusion.CalculationAccuracy.MediumCalculationAccuracy,
+        'High': adsk.fusion.CalculationAccuracy.VeryHighCalculationAccuracy,
+    }
+
+    MESH_ACCURACY = {
+        'Low': adsk.fusion.MeshRefinementSettings.MeshRefinementLow,
+        'Medium': adsk.fusion.MeshRefinementSettings.MeshRefinementMedium,
+        'High': adsk.fusion.MeshRefinementSettings.MeshRefinementHigh,
+    }
 
     def __init__(self, save_dir, save_mesh, sub_mesh, mesh_resolution, inertia_precision,
                 document_units, target_units, joint_order, target_platform) -> None:
@@ -41,29 +58,9 @@ class Manager:
         '''        
         self.save_mesh = save_mesh
         self.sub_mesh = sub_mesh
-        if document_units=='mm': doc_u = 0.001
-        elif document_units=='cm': doc_u = 0.01
-        elif document_units=='m': doc_u = 1.0
-
-        if target_units=='mm': tar_u = 0.001
-        elif target_units=='cm': tar_u = 0.01
-        elif target_units=='m': tar_u = 1.0
-        
-        self.scale = tar_u / doc_u       
-
-        if inertia_precision == 'Low':
-            self.inert_accuracy = adsk.fusion.CalculationAccuracy.LowCalculationAccuracy
-        elif inertia_precision == 'Medium':
-            self.inert_accuracy = adsk.fusion.CalculationAccuracy.MediumCalculationAccuracy
-        elif inertia_precision == 'High':
-            self.inert_accuracy = adsk.fusion.CalculationAccuracy.VeryHighCalculationAccuracy
-
-        if mesh_resolution == 'Low':
-            self.mesh_accuracy = adsk.fusion.MeshRefinementSettings.MeshRefinementLow
-        elif mesh_resolution == 'Medium':
-            self.mesh_accuracy = adsk.fusion.MeshRefinementSettings.MeshRefinementMedium
-        elif mesh_resolution == 'High':
-            self.mesh_accuracy = adsk.fusion.MeshRefinementSettings.MeshRefinementHigh
+        self.scale = self._unit_scale(target_units) / self._unit_scale(document_units)
+        self.inert_accuracy = self._lookup(self.INERTIA_ACCURACY, inertia_precision, 'inertia precision')
+        self.mesh_accuracy = self._lookup(self.MESH_ACCURACY, mesh_resolution, 'mesh resolution')
 
         if joint_order == 'Parent':
             self.joint_order = ('p','c')
@@ -78,6 +75,17 @@ class Manager:
         # Set directory 
         self._set_dir(save_dir)
 
+    @classmethod
+    def _lookup(cls, values, key, label):
+        try:
+            return values[key]
+        except KeyError as exc:
+            raise ValueError(f'Unsupported {label}: {key}') from exc
+
+    @classmethod
+    def _unit_scale(cls, unit):
+        return cls._lookup(cls.UNIT_SCALE, unit, 'unit')
+
     def _set_dir(self, save_dir):
         '''sets the class instance save directory
 
@@ -91,8 +99,7 @@ class Manager:
         package_name = robot_name + '_description'
 
         self.save_dir = os.path.join(save_dir, package_name)
-        try: os.mkdir(self.save_dir)
-        except: pass     
+        os.makedirs(self.save_dir, exist_ok=True)
 
     def preview(self):
         ''' Get all joints in the scene for previewing joints
@@ -107,6 +114,7 @@ class Manager:
         config.inertia_accuracy = self.inert_accuracy
         config.joint_order = self.joint_order
         config.scale = self.scale
+        config.target_platform = self.target_platform
         ## Return array of tuples (parent, child)
         config.get_scene_configuration()
         return config.get_joint_preview()
@@ -122,18 +130,29 @@ class Manager:
         config.scale = self.scale
         config.joint_order = self.joint_order
         config.sub_mesh = self.sub_mesh
+        config.target_platform = self.target_platform
         config.get_scene_configuration()
         config.parse()
 
         # --------------------
         # Generate URDF
         writer = io.Writer()
-        writer.write_urdf(self.save_dir, config)
+        writer.write_urdf(self.save_dir, config, self.target_platform)
 
         if self.target_platform == 'pyBullet':
             io.write_hello_pybullet(config.name, self.save_dir)
         
         # Custom STL Export
         if self.save_mesh:
-            io.visible_to_stl(Manager.design, self.save_dir, Manager.root, self.mesh_accuracy, config.body_dict, self.sub_mesh, config.body_mapper, Manager._app)
+            io.visible_to_stl(
+                Manager.design,
+                self.save_dir,
+                Manager.root,
+                self.mesh_accuracy,
+                config.body_dict,
+                self.sub_mesh,
+                config.body_mapper,
+                Manager._app,
+                self.target_platform,
+            )
 

@@ -164,16 +164,9 @@ For `pyBullet`, Fuse2rob can also write a small `hello_bullet.py` loading exampl
 
 ## Isaac Sim Notes
 
-Fuse2rob currently writes an additional fixed joint for Isaac Sim orientation correction:
+For Isaac Sim exports, Fuse2rob bakes the coordinate conversion into the URDF data and exported STL meshes instead of adding an extra correction link.
 
-```xml
-<link name="world_corrected"/>
-<joint name="world_to_base" type="fixed">
-  <parent link="world_corrected"/>
-  <child link="<base_link>"/>
-  <origin xyz="0 0 0" rpy="1.5708 0 0"/>
-</joint>
-```
+The Isaac Sim conversion rotates Fusion's `+Y` up frame into Isaac Sim's `+Z` up frame while preserving `+X` as the forward direction. This is equivalent to a `+90 degree` rotation about `X`, but it is applied directly to joint origins, joint axes, centers of mass, inertia tensors, and mesh geometry when **Target Platform** is set to `IsaacSim`.
 
 When importing into Isaac Sim:
 
@@ -225,7 +218,7 @@ The URDF writer creates:
 - XML header
 - robot tag
 - default silver material
-- Isaac Sim world correction link/joint
+- Isaac Sim coordinate-baked data when `IsaacSim` is selected
 - link definitions
 - joint definitions
 
