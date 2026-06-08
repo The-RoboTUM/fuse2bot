@@ -150,6 +150,8 @@ class Link:
             dictionary of body entity tokens to the occurrence name
         """
 
+        self.include_virtual_meshes = False
+
         self.name = name
         # xyz for visual
         self.xyz = [-(_) for _ in xyz]  # reverse the sign of xyz
@@ -168,55 +170,92 @@ class Link:
         """
         Generate the link_xml and hold it by self.link_xml
         """
-        
+
         link = Element('link')
+
+        # URDF-safe link name
         self.name = format_urdf_name(self.name)
-        link.attrib = {'name':self.name}
-        
-        #inertial
+        link.attrib = {'name': self.name}
+
+        is_virtual = self.name.endswith('_virtual')
+
+        # inertial
         inertial = SubElement(link, 'inertial')
+
         origin_i = SubElement(inertial, 'origin')
-        origin_i.attrib = {'xyz':' '.join([str(_) for _ in self.center_of_mass]), 'rpy':'0 0 0'}       
+        origin_i.attrib = {
+            'xyz': ' '.join([str(_) for _ in self.center_of_mass]),
+            'rpy': '0 0 0'
+        }
+ 
         mass = SubElement(inertial, 'mass')
-        mass.attrib = {'value':str(self.mass)}
+        mass.attrib = {'value': str(self.mass)}
+
         inertia = SubElement(inertial, 'inertia')
-        inertia.attrib = {'ixx':str(self.inertia_tensor[0]), 'iyy':str(self.inertia_tensor[1]),
-                          'izz':str(self.inertia_tensor[2]), 'ixy':str(self.inertia_tensor[3]),
-                          'iyz':str(self.inertia_tensor[4]), 'ixz':str(self.inertia_tensor[5])}        
-        
-        if 'virtual' not in self.name: 
-            # visual
-            if self.sub_mesh: # if we want to export each as a separate mesh
-                for body_name in self.body_dict[self.name]:
-                    # body_name = format_urdf_name(body_name)
-                    visual = SubElement(link, 'visual')
-                    origin_v = SubElement(visual, 'origin')
-                    origin_v.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
-                    geometry_v = SubElement(visual, 'geometry')
-                    mesh_v = SubElement(geometry_v, 'mesh')
-                    mesh_v.attrib = {'filename':f'package://{self.sub_folder}{body_name}.stl','scale':f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'}
-                    material = SubElement(visual, 'material')
-                    material.attrib = {'name':'silver'}
-            else:
-                visual = SubElement(link, 'visual')
-                origin_v = SubElement(visual, 'origin')
-                origin_v.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
-                geometry_v = SubElement(visual, 'geometry')
-                mesh_v = SubElement(geometry_v, 'mesh')
-                mesh_v.attrib = {'filename':f'package://{self.sub_folder}{self.name.replace('_virtual', '')}.stl','scale':f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'}
-                material = SubElement(visual, 'material')
-                material.attrib = {'name':'silver'}
-        
-            
-            # collision
-            collision = SubElement(link, 'collision')
-            origin_c = SubElement(collision, 'origin')
-            origin_c.attrib = {'xyz':' '.join([str(_) for _ in self.xyz]), 'rpy':'0 0 0'}
-            geometry_c = SubElement(collision, 'geometry')
-            mesh_c = SubElement(geometry_c, 'mesh')
-            mesh_c.attrib = {'filename':'package://' + self.sub_folder + self.name.replace('_virtual', '') + '.stl','scale':'0.001 0.001 0.001'}
+        inertia.attrib = {
+            'ixx': str(self.inertia_tensor[0]),
+            'iyy': str(self.inertia_tensor[1]),
+            'izz': str(self.inertia_tensor[2]),
+            'ixy': str(self.inertia_tensor[3]),
+            'iyz': str(self.inertia_tensor[4]),
+            'ixz': str(self.inertia_tensor[5])
+        }
+
+        # Virtual links can be inertial-only.
+        # Flip self.include_virtual_meshes = True to restore visual/collision meshes.
+        if is_virtual and not self.include_virtual_meshes:
+            rough_string = ElementTree.tostring(link, 'utf-8')
+            reparsed = minidom.parseString(rough_string)
+            self._link_xml = "\n".join(
+                reparsed.toprettyxml(indent="  ").split("\n")[1:]
+            )
+            return self._link_xml
+
+        mesh_owner = self.name
+        if mesh_owner.endswith('_virtual'):
+            mesh_owner = mesh_owner[:-len('_virtual')]
+
+        mesh_owner = format_urdf_name(mesh_owner)
+
+        def add_mesh(tag_name, mesh_filename):
+            elem = SubElement(link, tag_name)
+
+            origin = SubElement(elem, 'origin')
+            origin.attrib = {
+                'xyz': ' '.join([str(_) for _ in self.xyz]),
+                'rpy': '0 0 0'
+            }
+
+            geometry = SubElement(elem, 'geometry')
+
+            mesh = SubElement(geometry, 'mesh')
+            mesh.attrib = {
+                'filename': f'package://{self.sub_folder}{mesh_filename}.stl',
+                'scale': f'{Link.mesh_scale} {Link.mesh_scale} {Link.mesh_scale}'
+            }
+
+            if tag_name == 'visual':
+                material = SubElement(elem, 'material')
+                material.attrib = {'name': 'silver'}
+
+        if self.sub_mesh:
+            if mesh_owner not in self.body_dict:
+                raise KeyError(
+                    f"No body meshes found for link '{self.name}' "
+                    f"using mesh owner '{mesh_owner}'"
+                )
+
+            for body_name in self.body_dict[mesh_owner]:
+                add_mesh('visual', body_name)
+                add_mesh('collision', body_name)
+        else:
+            add_mesh('visual', mesh_owner)
+            add_mesh('collision', mesh_owner)
 
         rough_string = ElementTree.tostring(link, 'utf-8')
         reparsed = minidom.parseString(rough_string)
-        self._link_xml  = "\n".join(reparsed.toprettyxml(indent="  ").split("\n")[1:])
+        self._link_xml = "\n".join(
+            reparsed.toprettyxml(indent="  ").split("\n")[1:]
+        )
+
         return self._link_xml

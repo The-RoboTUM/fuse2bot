@@ -2,13 +2,13 @@
 module to parse fusion file 
 '''
 
-import copy
-import time
-import adsk, adsk.core, adsk.fusion
+import adsk.fusion
+
+from collections import Counter, defaultdict
+
 from . import transforms
 from . import parts
 from . import utils
-from collections import Counter, defaultdict
 
 class Hierarchy:
     ''' hierarchy of the design space '''
@@ -48,7 +48,7 @@ class Hierarchy:
             # use the entity token, more accurate than the name of the component (since there are multiple)
             child_map[tmp.component.entityToken] = tmp 
             # Check if this child has children
-            if len(tmp.get_children())> 0:
+            if len(tmp.get_children()) > 0:
                 # add them to the parent_stack
                 parent_stack.update(tmp.get_children())
 
@@ -57,7 +57,6 @@ class Hierarchy:
     def get_flat_body(self):
         ''' get a flat list of all components and child components '''
 
-        child_list = []
         body_list = []
         parent_stack = set()
 
@@ -66,7 +65,7 @@ class Hierarchy:
         if len(child_set) == 0:
             body_list.append([self.component.bRepBodies.item(x) for x in range(0, self.component.bRepBodies.count) ])
 
-        child_list = [x.children for x in child_set if len(x.children)>0]
+        child_list = [x.children for x in child_set if len(x.children) > 0]
         childs = []
         for c in child_list:
             for _c in c:
@@ -84,11 +83,11 @@ class Hierarchy:
                 body_list.append([tmp.component.bRepBodies.item(x) for x in range(0, tmp.component.bRepBodies.count) ])
 
             # Check if this child has children
-            if len(tmp.children)> 0:
+            if len(tmp.children) > 0:
                 # add them to the parent_stack
                 child_set = list(self.get_all_children().values())
 
-                child_list = [x.children for x in child_set if len(x.children)>0]
+                child_list = [x.children for x in child_set if len(x.children) > 0]
                 childs = []
                 for c in child_list:
                     for _c in c:
@@ -145,13 +144,12 @@ class Hierarchy:
             Instance of the class
         '''        
         
+        cur = parent
         for i in range(0, occurrences.count):
             occ = occurrences.item(i)
             cur = Hierarchy(occ)
 
-            if parent is None: 
-                pass
-            else: 
+            if parent is not None:
                 parent._add_child(cur)
 
             if occ.childOccurrences:
@@ -188,17 +186,32 @@ class Configurator:
         self.joint_order = ('p','c') # Order of joints defined by components
         self.scale = 100.0 # Units to convert to meters (or whatever simulator takes)
         self.inertia_scale = 10000.0 # units to convert mass
+        self.target_platform = 'None'
         self.base_links= set()
         # self.component_map = set()
 
         self.root_node = None
+
+    @property
+    def use_isaac_coordinates(self):
+        return self.target_platform == 'IsaacSim'
+
+    def _transform_xyz(self, vector):
+        if self.use_isaac_coordinates:
+            return transforms.fusion_y_up_to_isaac_z_up_xyz(vector)
+        return vector
+
+    def _transform_inertia(self, inertia):
+        if self.use_isaac_coordinates:
+            return transforms.fusion_y_up_to_isaac_z_up_inertia(inertia)
+        return inertia
 
     def get_scene_configuration(self):
         '''Build the graph of how the scene components are related
         '''        
         
         self.root_node = Hierarchy(self.root)
-        occ_list=self.root.occurrences.asList
+        occ_list = self.root.occurrences.asList
 
         Hierarchy.traverse(occ_list, self.root_node)
         self.component_map = self.root_node.get_all_children()
@@ -227,8 +240,6 @@ class Configurator:
             # add to the body mapper
             self.body_mapper[v.component.entityToken].extend(top_level_body)
 
-            top_body_name = [x.name for x in top_level_body]
-
             while children:
                 cur = children.pop()
                 children.update(cur.children)
@@ -238,14 +249,6 @@ class Configurator:
                 # add to this body mapper again 
                 self.body_mapper[v.component.entityToken].extend(sub_level_body)
                 
-                sub_body_name = [x.name for x in sub_level_body]
-
-        for oc in self.occ:       
-            # Iterate through bodies, only add mass of bodies that are visible (lightbulb)
-            # body_cnt = oc.bRepBodies.count
-            # mapped_comp =self.component_map[oc.entityToken]
-            body_lst = self.component_map[oc.entityToken].get_flat_body()
-
     def get_joint_preview(self):
         ''' Get the scenes joint relationships without calculating links 
         Returns
@@ -313,14 +316,15 @@ class Configurator:
 
             occs_dict['mass'] = mass
             center_of_mass = [_/self.scale for _ in prop.centerOfMass.asArray()] ## cm to m
-            occs_dict['center_of_mass'] = center_of_mass
+            occs_dict['center_of_mass'] = self._transform_xyz(center_of_mass)
 
 
             # https://help.autodesk.com/view/fusion360/ENU/?guid=GUID-ce341ee6-4490-11e5-b25b-f8b156d7cd97
             (_, xx, yy, zz, xy, yz, xz) = prop.getXYZMomentsOfInertia()
             moment_inertia_world = [_ / self.inertia_scale for _ in [xx, yy, zz, xy, yz, xz] ] ## kg / cm^2 -> kg/m^2
 
-            occs_dict['inertia'] = transforms.origin2center_of_mass(moment_inertia_world, center_of_mass, mass)
+            inertia = transforms.origin2center_of_mass(moment_inertia_world, center_of_mass, mass)
+            occs_dict['inertia'] = self._transform_inertia(inertia)
 
             self.inertial_dict[oc.name] = occs_dict
 
@@ -337,7 +341,7 @@ class Configurator:
             joint.geometryOrOriginTwo.origin.asArray()
             return True 
         
-        except:
+        except Exception:
             return False
 
 
@@ -363,48 +367,31 @@ class Configurator:
             
             # Check that both bodies are valid (e.g. there is no missing reference)
             if not self._is_joint_valid(joint):
-                # TODO: Handle in a better way (like warning message)
                 continue
 
             geom_one_origin = joint.geometryOrOriginOne.origin.asArray()
-            geom_one_primary = joint.geometryOrOriginOne.primaryAxisVector.asArray()
-            geom_one_secondary = joint.geometryOrOriginOne.secondaryAxisVector.asArray()
-            geom_one_third = joint.geometryOrOriginOne.thirdAxisVector.asArray()
-
             # Check if this is already top level
             # Check if the parent_list only contains one entity
             parent_list = self.component_map[occ_one.entityToken].get_all_parents()
-            if len(parent_list) == 1:
-                pass
-            # If it is not, get the mapping and trace it back up
-            else: 
+            if len(parent_list) != 1:
                 # the expectation is there is at least two items, the last is the full body
                 # the second to last should be the next top-most component
                 # reset occurrence one
                 occ_one = self.component_map[parent_list[-2]].component
 
             parent_list = self.component_map[occ_two.entityToken].get_all_parents()
-            if len(parent_list) == 1:
-                pass
-            else:
+            if len(parent_list) != 1:
                 # the expectation is there is at least two items, the last is the full body
                 # the second to last should be the next top-most component
                 # reset occurrence two
                 occ_two = self.component_map[parent_list[-2]].component
 
-            geom_two_origin = joint.geometryOrOriginTwo.origin.asArray()
-            geom_two_primary = joint.geometryOrOriginTwo.primaryAxisVector.asArray()
-            geom_two_secondary = joint.geometryOrOriginTwo.secondaryAxisVector.asArray()
-            geom_two_third = joint.geometryOrOriginTwo.thirdAxisVector.asArray()
-            
             joint_type = joint.jointMotion.objectType # string 
             
             # Only Revolute joints have rotation axis 
-            if 'RigidJointMotion' in joint_type:
-                pass
-            else:
+            if 'RigidJointMotion' not in joint_type:
                 if "RevoluteJointMotion" in joint_type:
-                    joint_vector = joint.jointMotion.rotationAxisVector.asArray() 
+                    joint_vector = self._transform_xyz(joint.jointMotion.rotationAxisVector.asArray())
                     joint_limit_max = joint.jointMotion.rotationLimits.maximumValue
                     joint_limit_min = joint.jointMotion.rotationLimits.minimumValue
                     
@@ -415,7 +402,7 @@ class Configurator:
                     # with open(r"C:\Programmieren\RoboTUM\fuse2bot\out\log" + f"{int(time.time())}.txt", "a") as log:
                     #     log.write(f"Slider has vars: {vars(joint.jointMotion)}\n")
                     #     log.write(f"Slider has dir: {dir(joint.jointMotion)}\n")
-                    joint_vector = joint.jointMotion.slideDirectionVector.asArray()
+                    joint_vector = self._transform_xyz(joint.jointMotion.slideDirectionVector.asArray())
                     joint_limit_max = joint.jointMotion.slideLimits.maximumValue/self.scale
                     joint_limit_min = joint.jointMotion.slideLimits.minimumValue/self.scale
                     if joint_limit_max - joint_limit_min <= 0:
@@ -440,7 +427,7 @@ class Configurator:
             else:
                 raise ValueError(f'Order {self.joint_order} not supported')
 
-            joint_dict['xyz'] = [ x/self.scale for x in geom_one_origin]
+            joint_dict['xyz'] = self._transform_xyz([x/self.scale for x in geom_one_origin])
 
             self.joints_dict[joint.name] = joint_dict
 
@@ -453,8 +440,6 @@ class Configurator:
 
         self.body_dict = defaultdict(list) # key : occurrence name -> value : list of bodies under that occurrence
         body_dict_urdf = defaultdict(list) # list to send to parts.py
-        duplicate_bodies = defaultdict(int) # key : name -> value : # of instances
-
         oc_name = ''
         # Make sure no repeated body names
         body_count = Counter()
@@ -470,8 +455,6 @@ class Configurator:
                 for body in body_lst:
                     # Check if this body is hidden
                     if body.isLightBulbOn:
-                        if body.name in duplicate_bodies:
-                            duplicate_bodies[body.name] +=1
                         self.body_dict[oc_name].append(body)
 
                         body_name = utils.format_urdf_name(body.name)
@@ -484,10 +467,10 @@ class Configurator:
         # Make the actual urdf names accessible
         self.body_dict_urdf = body_dict_urdf
 
-
-        base_link = self.base_links.pop()
+        base_link = next(iter(self.base_links))
+        base_urdf_name = utils.format_urdf_name(base_link)
         center_of_mass = self.inertial_dict[base_link]['center_of_mass']
-        link = parts.Link(name=base_link, 
+        link = parts.Link(name=base_urdf_name, 
                         xyz=[0,0,0], 
                         center_of_mass=center_of_mass, 
                         sub_folder=mesh_folder,
@@ -496,38 +479,66 @@ class Configurator:
                         body_dict = body_dict_urdf,
                         sub_mesh = self.sub_mesh)
 
-        self.links_xyz_dict[link.name] = link.xyz
-        self.links[link.name] = link
+        self.links_xyz_dict[base_urdf_name] = link.xyz
+        self.links[base_urdf_name] = link
 
-        # TODO: Issue found, link is replaced
+        def split_inertial(raw_name, ratio=0.5):
+            mass = self.inertial_dict[raw_name]['mass']
+            inertia = self.inertial_dict[raw_name]['inertia']
+
+            real_mass = mass * (1.0 - ratio)
+            virtual_mass = mass * ratio
+
+            real_inertia = [x * (1.0 - ratio) for x in inertia]
+            virtual_inertia = [x * ratio for x in inertia]
+
+            return real_mass, virtual_mass, real_inertia, virtual_inertia
+
         for k, joint in self.joints_dict.items():
-            name = joint['child']
+            raw_name = joint['child']
+            name = utils.format_urdf_name(raw_name)
 
-            # check if the link is already known
             if self.links.get(name) is not None:
-                print(f"Problem detected with this link: {name}")
                 name_virtual = name + '_virtual'
                 self.virtual_links.append(name_virtual)
                 joint['child'] = name_virtual
-                # self.corrected_positions[link.name] = (link.xyz[0], link.xyz[1], link.xyz[2])
 
-                center_of_mass = [ i-j for i, j in zip(self.inertial_dict[name]['center_of_mass'], joint['xyz'])]
-                link = parts.Link(name=name_virtual, 
-                                xyz=(joint['xyz'][0], joint['xyz'][1], joint['xyz'][2]),
-                                center_of_mass=center_of_mass,
-                                sub_folder=mesh_folder, 
-                                mass=0.0001,
-                                inertia_tensor=[0.0000001, 0.0000001, 0.0000001, 0.0, 0.0, 0.0],
-                                body_dict = body_dict_urdf,
-                                sub_mesh = self.sub_mesh)
+                center_of_mass = [
+                    i - j for i, j in zip(
+                        self.inertial_dict[raw_name]['center_of_mass'],
+                        joint['xyz']
+                    )
+                ]
+
+                real_mass, virtual_mass, real_inertia, virtual_inertia = split_inertial(
+                    raw_name,
+                    ratio=0.5
+                )
+
+                # Share inertial properties with existing real link
+                self.links[name].mass = real_mass
+                self.links[name].inertia_tensor = real_inertia
+
+                link = parts.Link(
+                    name=name_virtual,
+                    xyz=(joint['xyz'][0], joint['xyz'][1], joint['xyz'][2]),
+                    center_of_mass=center_of_mass,
+                    sub_folder=mesh_folder,
+                    mass=virtual_mass,
+                    inertia_tensor=virtual_inertia,
+                    body_dict=body_dict_urdf,
+                    sub_mesh=self.sub_mesh
+                )
+
             else:
-                center_of_mass = [ i-j for i, j in zip(self.inertial_dict[name]['center_of_mass'], joint['xyz'])]
+                joint['child'] = name
+                center_of_mass = [ i-j for i, j in zip(self.inertial_dict[raw_name]['center_of_mass'], joint['xyz'])]
                 link = parts.Link(name=name, 
                                 xyz=(joint['xyz'][0], joint['xyz'][1], joint['xyz'][2]),
                                 center_of_mass=center_of_mass,
                                 sub_folder=mesh_folder, 
-                                mass=self.inertial_dict[name]['mass'],
-                                inertia_tensor=self.inertial_dict[name]['inertia'],
+                                mass=self.inertial_dict[raw_name]['mass'],
+                                inertia_tensor=self.inertial_dict[raw_name]['inertia'],
                                 body_dict = body_dict_urdf,
                                 sub_mesh = self.sub_mesh)
 
@@ -542,38 +553,43 @@ class Configurator:
 
         for k, j in self.joints_dict.items():
 
+            parent = utils.format_urdf_name(j['parent'])
+            child = utils.format_urdf_name(j['child'])
+
             xyz = []
-            for p,c in zip(self.links_xyz_dict[j['parent']], self.links_xyz_dict[j['child']]):
+            for p, c in zip(self.links_xyz_dict[parent], self.links_xyz_dict[child]):
                 xyz.append(p - c)
 
-            joint = parts.Joint(name=k , joint_type=j['type'], 
-                                xyz=xyz, axis=j['axis'], 
-                                parent=j['parent'], child=j['child'], 
-                                upper_limit=j['upper_limit'], lower_limit=j['lower_limit'])
-            
+            joint = parts.Joint(
+                name=k,
+                joint_type=j['type'],
+                xyz=xyz,
+                axis=j['axis'],
+                parent=parent,
+                child=child,
+                upper_limit=j['upper_limit'],
+                lower_limit=j['lower_limit']
+            )
+
             self.joints[k] = joint
 
-            # create rigid joint
-            if j['child'] in self.virtual_links:
-                # get the real link name
-                real_link = j['child'].replace('_virtual', '')
+            # create virtual anchor joint
+            if child in self.virtual_links:
+                real_link = child.replace('_virtual', '')
 
-                # compute the xyz offset between real link and virtual link
                 xyz_fixed = []
-                for p, c in zip(self.links_xyz_dict[real_link], self.links_xyz_dict[j['child']]):
+                for p, c in zip(self.links_xyz_dict[real_link], self.links_xyz_dict[child]):
                     xyz_fixed.append(p - c)
 
-                # create a rigid revolute joint instead of a fixed joint
                 fixed_joint = parts.Joint(
                     name=f"Virtual_{real_link}_anchor",
-                    joint_type="revolute",  # <-- change from 'fixed' to 'revolute'
+                    joint_type="revolute",
                     xyz=xyz_fixed,
-                    axis=[1, 0, 0],         # pick any valid axis, [1,0,0] is fine
+                    axis=[1, 0, 0],
                     parent=real_link,
-                    child=j['child'],
-                    upper_limit=0.001,      # very small allowed rotation
-                    lower_limit=-0.001,     # very small allowed rotation
+                    child=child,
+                    upper_limit=0.001,
+                    lower_limit=-0.001,
                 )
 
-                # add the fixed joint to self.joints
                 self.joints[fixed_joint.name] = fixed_joint

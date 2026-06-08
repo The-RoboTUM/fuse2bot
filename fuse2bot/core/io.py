@@ -1,12 +1,14 @@
 import os
-import adsk, adsk.core, adsk.fusion
-from . import parts
-from . import parser
-from . import manager
-from . import utils
-from collections import Counter, defaultdict
 
-def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_mapper, _app):  
+import adsk.core
+import adsk.fusion
+
+from . import parser
+from . import transforms
+from . import utils
+from collections import Counter
+
+def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_mapper, _app, target_platform='None'):
     """
     export top-level components as a single stl file into "save_dir/"
     
@@ -24,20 +26,15 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
         list of all bodies to use for stl export
     """
           
-    # create a single exportManager instance
-    exporter = design.exportManager
-
     # Setup new document for saving to
-    des: adsk.fusion.Design = _app.activeProduct
-
-    newDoc: adsk.core.Document = _app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType, True) 
-    newDes: adsk.fusion.Design = newDoc.products.itemByProductType('DesignProductType')
-    newRoot = newDes.rootComponent
+    new_doc: adsk.core.Document = _app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType, True)
+    new_design: adsk.fusion.Design = new_doc.products.itemByProductType('DesignProductType')
+    new_root = new_design.rootComponent
+    mesh_transform = isaac_mesh_transform() if target_platform == 'IsaacSim' else None
 
     # get the script location
-    save_dir = os.path.join(save_dir,'meshes')
-    try: os.mkdir(save_dir)
-    except: pass
+    save_dir = os.path.join(save_dir, 'meshes')
+    os.makedirs(save_dir, exist_ok=True)
 
     # Export top-level occurrences
     occ = root.occurrences.asList
@@ -54,9 +51,15 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
         # Create a new exporter in case its a memory thing
         exporter = design.exportManager
 
-        occName = utils.format_urdf_name(oc.name)
-        
-        component_exporter(exporter, newRoot, body_mapper[oc.entityToken], os.path.join(save_dir,f'{occName}'))
+        occ_name = utils.format_urdf_name(oc.name)
+
+        component_exporter(
+            exporter,
+            new_root,
+            body_mapper[oc.entityToken],
+            os.path.join(save_dir, f'{occ_name}'),
+            mesh_transform,
+        )
 
         if sub_mesh:
             # get the bodies associated with this top-level component (which will contain sub-components)
@@ -70,12 +73,20 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
                     body_name_cnt = f'{body_name}_{body_count[body_name]}'
                     body_count[body_name] += 1
 
-                    save_name = os.path.join(save_dir,f'{occName}_{body_name_cnt}')
+                    save_name = os.path.join(save_dir, f'{occ_name}_{body_name_cnt}')
 
-                    body_exporter(exporter, newRoot, body, save_name)
+                    body_exporter(exporter, new_root, body, save_name, mesh_transform)
 
 
-def component_exporter(exportMgr, newRoot, body_lst, filename):
+def isaac_mesh_transform():
+    transform = adsk.core.Matrix3D.create()
+    axis = adsk.core.Vector3D.create(1, 0, 0)
+    origin = adsk.core.Point3D.create(0, 0, 0)
+    transform.setToRotation(transforms.ISAAC_ROTATION_RPY[0], axis, origin)
+    return transform
+
+
+def component_exporter(export_mgr, new_root, body_lst, filename, mesh_transform=None):
     ''' Copy a component to a new document, save, then delete. 
 
     Modified from solution proposed by BrianEkins https://EkinsSolutions.com
@@ -94,48 +105,50 @@ def component_exporter(exportMgr, newRoot, body_lst, filename):
 
     tBrep = adsk.fusion.TemporaryBRepManager.get()
 
-    bf = newRoot.features.baseFeatures.add()
+    bf = new_root.features.baseFeatures.add()
     bf.startEdit()
 
     for body in body_lst:
-        if not body.isLightBulbOn: continue
-        if not isinstance(body, adsk.fusion.BRepBody):
-            print("Invalid body:", body)
-        tBody = tBrep.copy(body)
+        if not body.isLightBulbOn:
+            continue
+        tmp_body = tBrep.copy(body)
+        if mesh_transform is not None:
+            tBrep.transform(tmp_body, mesh_transform)
 
-        newRoot.bRepBodies.add(tBody, bf)
+        new_root.bRepBodies.add(tmp_body, bf)
 
     bf.finishEdit()
-    stlOptions = exportMgr.createSTLExportOptions(newRoot, f'{filename}.stl')
-    exportMgr.execute(stlOptions)
+    stl_options = export_mgr.createSTLExportOptions(new_root, f'{filename}.stl')
+    export_mgr.execute(stl_options)
 
     bf.deleteMe()
 
-def body_exporter(exportMgr, newRoot, body, filename):
+def body_exporter(export_mgr, new_root, body, filename, mesh_transform=None):
     tBrep = adsk.fusion.TemporaryBRepManager.get()
-    
-    tBody = tBrep.copy(body)
 
-    bf = newRoot.features.baseFeatures.add()
+    tmp_body = tBrep.copy(body)
+    if mesh_transform is not None:
+        tBrep.transform(tmp_body, mesh_transform)
+
+    bf = new_root.features.baseFeatures.add()
     bf.startEdit()
-    newRoot.bRepBodies.add(tBody, bf)
+    new_root.bRepBodies.add(tmp_body, bf)
     bf.finishEdit()
 
-    newBody = newRoot.bRepBodies[0]
+    new_body = new_root.bRepBodies[0]
 
-    stl_options = exportMgr.createSTLExportOptions(newBody, filename)
+    stl_options = export_mgr.createSTLExportOptions(new_body, filename)
     stl_options.sendToPrintUtility = False
     stl_options.isBinaryFormat = True
     # stl_options.meshRefinement = accuracy
-    exportMgr.execute(stl_options)                
+    export_mgr.execute(stl_options)
 
     bf.deleteMe()
 
 class Writer:
 
     def __init__(self) -> None:
-        print("Test")
-        # pass
+        pass
 
     def write_link(self, config, file_name):
         ''' Write links information into urdf file_name
@@ -150,7 +163,7 @@ class Writer:
         '''
 
         with open(file_name, mode='a', encoding="utf-8") as f:
-            for _, link in config.links.items():  
+            for _, link in config.links.items():
                 f.write(f'{link.link_xml}\n')
 
     def write_joint(self, file_name, config: parser.Configurator):
@@ -170,7 +183,7 @@ class Writer:
                 f.write(f'{joint.joint_xml}\n')
 
 
-    def write_urdf(self, save_dir, config: parser.Configurator):
+    def write_urdf(self, save_dir, config: parser.Configurator, target_platform='None'):
         ''' Write each component of the xml structure to file
 
         Parameters
@@ -181,9 +194,8 @@ class Writer:
             root nodes instance of configurator class
         '''        
 
-        save_dir = os.path.join(save_dir,'urdf')
-        try: os.mkdir(save_dir)
-        except: pass
+        save_dir = os.path.join(save_dir, 'urdf')
+        os.makedirs(save_dir, exist_ok=True)
         robot_name = utils.format_urdf_name(config.name)
         file_name = os.path.join(save_dir, f'{robot_name}.urdf')  # the name of urdf file
 
@@ -194,21 +206,13 @@ class Writer:
             f.write('  <color rgba="0.700 0.700 0.700 1.000"/>\n')
             f.write('</material>\n\n')
 
-            # --- Isaac Sim correction ---
-            f.write('<link name="world_corrected"/>\n')
-            f.write('<joint name="world_to_base" type="fixed">\n')
-            f.write('  <parent link="world_corrected"/>\n')
-            root_name = next(iter(config.links.values())).name
-            # sanitize exactly the same way as in your parts.py
-            sanitized_root = root_name.replace(':', '_').replace(' ', '')
-            f.write(f'  <child link="{sanitized_root}"/>\n')
-            f.write('  <origin xyz="0 0 0" rpy="-1.5708 0 0"/>\n')
-            f.write('</joint>\n\n')
+            if target_platform == 'IsaacSim':
+                f.write('<!-- Coordinates baked for Isaac Sim: +X forward, +Z up. -->\n\n')
 
         self.write_link(config, file_name)
         self.write_joint(file_name, config)
 
-        with open(file_name, mode='a') as f:
+        with open(file_name, mode='a', encoding="utf-8") as f:
             f.write('</robot>\n')
 
 def write_hello_pybullet(robot_name, save_dir):
@@ -224,8 +228,8 @@ def write_hello_pybullet(robot_name, save_dir):
         path to store file
     '''    
 
-    robot_urdf = f'{robot_name}.urdf' ## basename of robot.urdf
-    file_name = os.path.join(save_dir,'hello_bullet.py')
+    robot_urdf = f'{robot_name}.urdf'  # basename of robot.urdf
+    file_name = os.path.join(save_dir, 'hello_bullet.py')
     hello_pybullet = """
 import pybullet as p
 import os
@@ -252,6 +256,6 @@ print(cubePos,cubeOrn)
 p.disconnect()
 """
     hello_pybullet = hello_pybullet.replace('TEMPLATE.urdf', robot_urdf)
-    with open(file_name, mode='w') as f:
+    with open(file_name, mode='w', encoding="utf-8") as f:
         f.write(hello_pybullet)
         f.write('\n')

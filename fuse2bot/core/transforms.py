@@ -1,5 +1,33 @@
 
 
+import math
+
+
+ISAAC_ROTATION_RPY = (math.pi / 2.0, 0.0, 0.0)
+
+
+def fusion_y_up_to_isaac_z_up_xyz(vector):
+    """Rotate a vector from Fusion +Y-up coordinates to Isaac +Z-up coordinates."""
+    x, y, z = vector
+    return [x, -z, y]
+
+
+def fusion_y_up_to_isaac_z_up_inertia(inertia):
+    """Rotate inertia tensor components from Fusion +Y-up to Isaac +Z-up.
+
+    The project stores inertia as [ixx, iyy, izz, ixy, iyz, ixz].
+    """
+    ixx, iyy, izz, ixy, iyz, ixz = inertia
+    return [
+        ixx,
+        izz,
+        iyy,
+        -ixz,
+        -iyz,
+        ixy,
+    ]
+
+
 def origin2center_of_mass(inertia, center_of_mass, mass):
     """
     convert the moment of the inertia about the world coordinate into 

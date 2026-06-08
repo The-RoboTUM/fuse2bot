@@ -1,3 +1,5 @@
+import re
+
 def format_urdf_name(name: str) -> str:
     """Format a string to be a valid URDF name
 
@@ -13,5 +15,5 @@ def format_urdf_name(name: str) -> str:
     """
     name = name.replace(":", "_").replace(" ", "").replace("-", "_").lower()
     # also replace ending with "v28_1" with "_1"
-    name = re.sub(r"v\d+(_\d+$)", r"\1", name)
+    name = re.sub(r"(?<!_)v\d+(_\d+$)", r"\1", name)
     return name

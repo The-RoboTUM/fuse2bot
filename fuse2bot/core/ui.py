@@ -1,7 +1,10 @@
 ''' module: user interface'''
 
+import traceback
+
 import adsk
-import adsk.core, adsk.fusion, traceback
+import adsk.core
+import adsk.fusion
 
 from . import manager
 
@@ -53,11 +56,6 @@ class MyInputChangedHandler(adsk.core.InputChangedEventHandler):
             target_platform = inputs.itemById('target_platform')
 
             if cmdInput.id == 'generate':
-                # User asked to generate using current settings
-                # print(f'{directory_path.text}, {save_mesh.value}, {mesh_resolution.selectedItem.name},\
-                #         {inertia_precision.selectedItem.name}, {document_units.selectedItem.name},\
-                #         {target_units.selectedItem.name}, {joint_order.selectedItem.name}' )
-
                 document_manager = manager.Manager(directory_path.text, save_mesh.value, sub_mesh.value,
                                                    mesh_resolution.selectedItem.name, 
                                                    inertia_precision.selectedItem.name, 
@@ -65,7 +63,7 @@ class MyInputChangedHandler(adsk.core.InputChangedEventHandler):
                                                    target_units.selectedItem.name, 
                                                    joint_order.selectedItem.name, 
                                                    target_platform.selectedItem.name)
-                
+
                 # Generate
                 document_manager.run()
 
@@ -91,7 +89,7 @@ class MyInputChangedHandler(adsk.core.InputChangedEventHandler):
                 directory_path.text = save_dir
 
             return True
-        except:
+        except Exception:
             if self.ui:
                 self.ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
@@ -102,7 +100,7 @@ class MyDestroyHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         try:
             adsk.terminate()
-        except:
+        except Exception:
             if self.ui:
                 self.ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
@@ -201,7 +199,6 @@ class MyCreatedHandler(adsk.core.CommandCreatedEventHandler):
             di.add('IsaacSim', True, '')
             di.add('None', False, '')
             di.add('pyBullet', False, '')
-            # di.add('m', False, '') # TODO Add other methods if needed 
 
             # Make a button to preview the hierarchy 
             btn = inputs.addBoolValueInput('preview', 'Preview Links', False)
@@ -223,7 +220,7 @@ class MyCreatedHandler(adsk.core.CommandCreatedEventHandler):
             btn.isFullWidth = True
 
 
-        except:
+        except Exception:
             if self.ui:
                 self.ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
@@ -263,8 +260,8 @@ def config_settings(ui, ui_handlers):
 
         return True 
 
-    except:
+    except Exception:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
-            return False
+        return False
