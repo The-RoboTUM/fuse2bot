@@ -24,7 +24,8 @@ Depending on the selected settings, the URDF can include:
 - visual meshes
 - collision meshes
 - sub-mesh exports for links made from multiple visible bodies
-- an Isaac Sim orientation correction link/joint
+- Isaac Sim coordinate-baked exports
+- a material and mass report
 - optional pyBullet starter script
 
 ## Main Features
@@ -37,6 +38,8 @@ Depending on the selected settings, the URDF can include:
 - Configurable document units and target units.
 - Configurable joint parent/child interpretation.
 - Inertia calculation using Fusion 360 physical properties.
+- Material and body-mass reporting from Fusion physical materials.
+- URDF visual material colors from Fusion body appearances.
 - Basic Isaac Sim compatibility support.
 - Virtual-link handling for mechanisms that need a URDF tree representation.
 
@@ -128,6 +131,22 @@ Controls Fusion 360 physical-property calculation accuracy:
 - `High`
 
 Use higher precision when mass properties are important for simulation.
+
+### Materials and Mass
+
+Fuse2rob gets link mass, center of mass, and inertia from Fusion 360 physical properties. Those values depend on Fusion physical materials and densities, not just visual appearances.
+
+Fusion appearances are exported as named URDF visual material colors where possible. This affects how links look in importers such as Isaac Sim, but it does not affect mass or inertia.
+
+Appearance export supports single-color body/material appearances. If a body only has face-level colors, Fuse2rob uses the first face color it can read as a fallback. Textures and multiple colors on one STL body are not preserved by the URDF/STL path.
+
+Each URDF export also writes a material report next to the URDF:
+
+```text
+urdf/<robot_name>_materials.csv
+```
+
+The report lists each body, whether it was visible, whether it contributed to the exported mass, its Fusion physical material, appearance, color, body mass, density, and volume when Fusion exposes those values.
 
 ### Document Units and Target Units
 
@@ -221,6 +240,7 @@ The URDF writer creates:
 - Isaac Sim coordinate-baked data when `IsaacSim` is selected
 - link definitions
 - joint definitions
+- material and mass report CSV next to the URDF
 
 ### Meshes
 

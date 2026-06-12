@@ -179,6 +179,9 @@ class Configurator:
         self.sub_mesh = False
         self.joints_dict = {}
         self.body_dict = {}
+        self.visual_materials = {}
+        self.material_report_rows = []
+        self.material_report_keys = set()
         self.links = {} # Link class
         self.virtual_links = [] # Store all the links identified having more than one parent
         self.corrected_positions = {} # store their corrected positions
@@ -188,6 +191,7 @@ class Configurator:
         self.inertia_scale = 10000.0 # units to convert mass
         self.target_platform = 'None'
         self.base_links= set()
+        self.material_names_by_rgba = {}
         # self.component_map = set()
 
         self.root_node = None
@@ -205,6 +209,152 @@ class Configurator:
         if self.use_isaac_coordinates:
             return transforms.fusion_y_up_to_isaac_z_up_inertia(inertia)
         return inertia
+
+    @staticmethod
+    def _safe_name(value, default=''):
+        if value is None:
+            return default
+        return getattr(value, 'name', default) or default
+
+    @staticmethod
+    def _color_to_rgba(color):
+        if color is None:
+            return None
+
+        channels = [
+            getattr(color, 'red', 179),
+            getattr(color, 'green', 179),
+            getattr(color, 'blue', 179),
+            getattr(color, 'opacity', 255),
+        ]
+        if max(channels) > 1.0:
+            channels = [channel / 255.0 for channel in channels]
+
+        channels[3] = 1.0
+        return tuple(round(channel, 6) for channel in channels)
+
+    @classmethod
+    def _property_to_rgba(cls, prop):
+        if prop is None:
+            return None
+
+        color = cls._color_to_rgba(getattr(prop, 'value', None))
+        if color is not None:
+            return color
+
+        values = getattr(prop, 'values', None)
+        if values:
+            try:
+                return cls._color_to_rgba(values[0])
+            except Exception:
+                return None
+
+        return None
+
+    @classmethod
+    def _appearance_color(cls, appearance):
+        if appearance is None:
+            return None
+
+        properties = getattr(appearance, 'appearanceProperties', None)
+        if properties is None:
+            return None
+
+        for property_id in ('opaque_albedo', 'generic_diffuse', 'surface_albedo', 'Color'):
+            try:
+                prop = properties.itemById(property_id)
+            except Exception:
+                prop = None
+
+            if prop is None:
+                try:
+                    prop = properties.itemByName(property_id)
+                except Exception:
+                    prop = None
+
+            if prop is not None:
+                color = cls._property_to_rgba(prop)
+                if color is not None:
+                    return color
+
+        count = getattr(properties, 'count', 0)
+        for index in range(count):
+            try:
+                prop = properties.item(index)
+            except Exception:
+                continue
+
+            color = cls._property_to_rgba(prop)
+            if color is not None:
+                return color
+
+        return None
+
+    @classmethod
+    def _body_material_info(cls, body):
+        material = getattr(body, 'material', None)
+        appearance = getattr(body, 'appearance', None)
+        if appearance is None and material is not None:
+            appearance = getattr(material, 'appearance', None)
+
+        physical_properties = getattr(body, 'physicalProperties', None)
+        rgba = cls._appearance_color(appearance)
+        if rgba is None:
+            for index in range(getattr(getattr(body, 'faces', None), 'count', 0)):
+                try:
+                    face_appearance = body.faces.item(index).appearance
+                except Exception:
+                    continue
+                rgba = cls._appearance_color(face_appearance)
+                if rgba is not None:
+                    appearance = face_appearance
+                    break
+
+        return {
+            'physical_material': cls._safe_name(material, 'Unassigned'),
+            'appearance': cls._safe_name(appearance, 'Default'),
+            'rgba': rgba or (0.7, 0.7, 0.7, 1.0),
+            'body_mass_kg': getattr(physical_properties, 'mass', ''),
+            'density': getattr(physical_properties, 'density', ''),
+            'volume': getattr(physical_properties, 'volume', ''),
+        }
+
+    def _append_material_report_row(self, occurrence_name, body, included_in_mass):
+        try:
+            body_token = body.entityToken
+        except Exception:
+            body_token = body.name
+
+        row_key = (occurrence_name, body_token, bool(included_in_mass))
+        if row_key in self.material_report_keys:
+            return
+        self.material_report_keys.add(row_key)
+
+        material_info = self._body_material_info(body)
+        self.material_report_rows.append({
+            'link': utils.format_urdf_name(occurrence_name),
+            'occurrence': occurrence_name,
+            'body': body.name,
+            'visible': bool(body.isLightBulbOn),
+            'included_in_exported_mass': bool(included_in_mass),
+            **material_info,
+        })
+
+    def _visual_material_name(self, rgba):
+        rgba = tuple(rgba or (0.7, 0.7, 0.7, 1.0))
+        if rgba == (0.7, 0.7, 0.7, 1.0):
+            return 'silver'
+
+        name = self.material_names_by_rgba.get(rgba)
+        if name is None:
+            name = f'mat_{len(self.material_names_by_rgba)}'
+            self.material_names_by_rgba[rgba] = name
+
+        self.visual_materials[name] = {
+            'name': name,
+            'rgba': rgba,
+        }
+        return name
 
     def get_scene_configuration(self):
         '''Build the graph of how the scene components are related
@@ -307,6 +457,7 @@ class Configurator:
 
             if len(body_lst) > 0:
                 for body in body_lst:
+                    self._append_material_report_row(oc.name, body, body.isLightBulbOn)
                     # Check if this body is hidden
                     #  
                     # body = oc.bRepBodies.item(i)
@@ -463,6 +614,20 @@ class Configurator:
 
                         unique_bodyname = f'{oc_name}_{body_name_cnt}'
                         body_dict_urdf[oc_name].append(unique_bodyname)
+                        material_info = self._body_material_info(body)
+                        if oc_name not in self.visual_materials:
+                            material_name = self._visual_material_name(material_info['rgba'])
+                            self.visual_materials[oc_name] = {
+                                'name': material_name,
+                                'rgba': material_info['rgba'],
+                            }
+
+                        if self.sub_mesh:
+                            material_name = self._visual_material_name(material_info['rgba'])
+                            self.visual_materials[unique_bodyname] = {
+                                'name': material_name,
+                                'rgba': material_info['rgba'],
+                            }
                     
         # Make the actual urdf names accessible
         self.body_dict_urdf = body_dict_urdf
@@ -477,7 +642,8 @@ class Configurator:
                         mass=self.inertial_dict[base_link]['mass'],
                         inertia_tensor=self.inertial_dict[base_link]['inertia'],
                         body_dict = body_dict_urdf,
-                        sub_mesh = self.sub_mesh)
+                        sub_mesh = self.sub_mesh,
+                        visual_materials=self.visual_materials)
 
         self.links_xyz_dict[base_urdf_name] = link.xyz
         self.links[base_urdf_name] = link
@@ -527,7 +693,8 @@ class Configurator:
                     mass=virtual_mass,
                     inertia_tensor=virtual_inertia,
                     body_dict=body_dict_urdf,
-                    sub_mesh=self.sub_mesh
+                    sub_mesh=self.sub_mesh,
+                    visual_materials=self.visual_materials
                 )
 
             else:
@@ -540,7 +707,8 @@ class Configurator:
                                 mass=self.inertial_dict[raw_name]['mass'],
                                 inertia_tensor=self.inertial_dict[raw_name]['inertia'],
                                 body_dict = body_dict_urdf,
-                                sub_mesh = self.sub_mesh)
+                                sub_mesh = self.sub_mesh,
+                                visual_materials=self.visual_materials)
 
             self.links_xyz_dict[link.name] = (link.xyz[0], link.xyz[1], link.xyz[2])   
             self.links[link.name] = link

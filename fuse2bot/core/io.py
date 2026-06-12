@@ -1,3 +1,4 @@
+import csv
 import os
 
 import adsk.core
@@ -26,12 +27,6 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
         list of all bodies to use for stl export
     """
           
-    # Setup new document for saving to
-    new_doc: adsk.core.Document = _app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType, True)
-    new_design: adsk.fusion.Design = new_doc.products.itemByProductType('DesignProductType')
-    new_root = new_design.rootComponent
-    mesh_transform = isaac_mesh_transform() if target_platform == 'IsaacSim' else None
-
     # get the script location
     save_dir = os.path.join(save_dir, 'meshes')
     os.makedirs(save_dir, exist_ok=True)
@@ -47,35 +42,44 @@ def visible_to_stl(design, save_dir, root, accuracy, body_dict, sub_mesh, body_m
     # Make sure no repeated body names
     body_count = Counter()
 
-    for oc in visible_components:
-        # Create a new exporter in case its a memory thing
-        exporter = design.exportManager
+    new_doc = None
+    try:
+        # Use a throwaway design so temporary export bodies never touch the source robot document.
+        new_doc = _app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType, True)
+        new_design: adsk.fusion.Design = new_doc.products.itemByProductType('DesignProductType')
+        new_root = new_design.rootComponent
+        exporter = new_design.exportManager
+        mesh_transform = isaac_mesh_transform() if target_platform == 'IsaacSim' else None
 
-        occ_name = utils.format_urdf_name(oc.name)
+        for oc in visible_components:
+            occ_name = utils.format_urdf_name(oc.name)
 
-        component_exporter(
-            exporter,
-            new_root,
-            body_mapper[oc.entityToken],
-            os.path.join(save_dir, f'{occ_name}'),
-            mesh_transform,
-        )
+            component_exporter(
+                exporter,
+                new_root,
+                body_mapper[oc.entityToken],
+                os.path.join(save_dir, f'{occ_name}'),
+                mesh_transform,
+            )
 
-        if sub_mesh:
-            # get the bodies associated with this top-level component (which will contain sub-components)
-            bodies = body_mapper[oc.entityToken]
+            if sub_mesh:
+                # get the bodies associated with this top-level component (which will contain sub-components)
+                bodies = body_mapper[oc.entityToken]
 
-            for body in bodies:
-                if body.isLightBulbOn:
+                for body in bodies:
+                    if body.isLightBulbOn:
 
-                    # Since there are alot of similar names, we need to store the parent component as well in the filename
-                    body_name = utils.format_urdf_name(body.name)
-                    body_name_cnt = f'{body_name}_{body_count[body_name]}'
-                    body_count[body_name] += 1
+                        # Since there are alot of similar names, we need to store the parent component as well in the filename
+                        body_name = utils.format_urdf_name(body.name)
+                        body_name_cnt = f'{body_name}_{body_count[body_name]}'
+                        body_count[body_name] += 1
 
-                    save_name = os.path.join(save_dir, f'{occ_name}_{body_name_cnt}')
+                        save_name = os.path.join(save_dir, f'{occ_name}_{body_name_cnt}')
 
-                    body_exporter(exporter, new_root, body, save_name, mesh_transform)
+                        body_exporter(exporter, new_root, body, save_name, mesh_transform)
+    finally:
+        if new_doc is not None:
+            new_doc.close(False)
 
 
 def isaac_mesh_transform():
@@ -182,6 +186,50 @@ class Writer:
             for _, joint in config.joints.items():
                 f.write(f'{joint.joint_xml}\n')
 
+    def write_materials(self, f, config: parser.Configurator):
+        '''Write robot-level visual materials.'''
+
+        materials = {
+            'silver': (0.7, 0.7, 0.7, 1.0),
+        }
+        for material_info in config.visual_materials.values():
+            name = material_info.get('name')
+            rgba = material_info.get('rgba')
+            if name and rgba:
+                materials[name] = rgba
+
+        for name, rgba in materials.items():
+            f.write(f'<material name="{name}">\n')
+            f.write(f'  <color rgba="{" ".join([str(_) for _ in rgba])}"/>\n')
+            f.write('</material>\n\n')
+
+    def write_material_report(self, file_name, config: parser.Configurator):
+        '''Write body material and mass diagnostics next to the URDF.'''
+
+        fieldnames = [
+            'link',
+            'occurrence',
+            'body',
+            'visible',
+            'included_in_exported_mass',
+            'physical_material',
+            'appearance',
+            'rgba',
+            'body_mass_kg',
+            'density',
+            'volume',
+        ]
+
+        with open(file_name, mode='w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in config.material_report_rows:
+                report_row = dict(row)
+                rgba = report_row.get('rgba')
+                if rgba:
+                    report_row['rgba'] = ' '.join([str(_) for _ in rgba])
+                writer.writerow(report_row)
+
 
     def write_urdf(self, save_dir, config: parser.Configurator, target_platform='None'):
         ''' Write each component of the xml structure to file
@@ -198,19 +246,19 @@ class Writer:
         os.makedirs(save_dir, exist_ok=True)
         robot_name = utils.format_urdf_name(config.name)
         file_name = os.path.join(save_dir, f'{robot_name}.urdf')  # the name of urdf file
+        material_report_name = os.path.join(save_dir, f'{robot_name}_materials.csv')
 
         with open(file_name, mode='w', encoding="utf-8") as f:
             f.write('<?xml version="1.0" ?>\n')
             f.write(f'<robot name="{robot_name}">\n\n')
-            f.write('<material name="silver">\n')
-            f.write('  <color rgba="0.700 0.700 0.700 1.000"/>\n')
-            f.write('</material>\n\n')
+            self.write_materials(f, config)
 
             if target_platform == 'IsaacSim':
                 f.write('<!-- Coordinates baked for Isaac Sim: +X forward, +Z up. -->\n\n')
 
         self.write_link(config, file_name)
         self.write_joint(file_name, config)
+        self.write_material_report(material_report_name, config)
 
         with open(file_name, mode='a', encoding="utf-8") as f:
             f.write('</robot>\n')

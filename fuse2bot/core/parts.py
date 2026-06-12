@@ -126,7 +126,7 @@ class Link:
 
     mesh_scale = '0.001'
 
-    def __init__(self, name, xyz, center_of_mass, sub_folder, mass, inertia_tensor, body_dict, sub_mesh):
+    def __init__(self, name, xyz, center_of_mass, sub_folder, mass, inertia_tensor, body_dict, sub_mesh, visual_materials=None):
         """
         Parameters
         ----------
@@ -163,6 +163,7 @@ class Link:
         self.inertia_tensor = inertia_tensor
         self.body_dict = body_dict
         self.sub_mesh = sub_mesh # if we want to export each body as a separate mesh
+        self.visual_materials = visual_materials or {}
 
         
     @property
@@ -235,8 +236,9 @@ class Link:
             }
 
             if tag_name == 'visual':
+                material_info = self.visual_materials.get(mesh_filename, {})
                 material = SubElement(elem, 'material')
-                material.attrib = {'name': 'silver'}
+                material.attrib = {'name': material_info.get('name', 'silver')}
 
         if self.sub_mesh:
             if mesh_owner not in self.body_dict:
