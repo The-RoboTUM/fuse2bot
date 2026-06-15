@@ -19,10 +19,123 @@ Usage:
 import argparse
 import os
 import sys
+import struct
+import shutil
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from dataclasses import dataclass, field
 from typing import Optional
+
+MAX_FACES = 200_000
+
+
+# ---------------------------------------------------------------------------
+# STL and Decimation Utilities
+# ---------------------------------------------------------------------------
+
+def is_ascii_stl(filepath):
+    """Check if an STL file is ASCII format (starts with 'solid')."""
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(80)
+        return header.lstrip().startswith(b"solid")
+    except Exception:
+        return False
+
+
+def get_stl_face_count(filepath):
+    """Read the face count from a binary STL header."""
+    try:
+        with open(filepath, "rb") as f:
+            f.read(80)
+            return struct.unpack("<I", f.read(4))[0]
+    except Exception:
+        return 0
+
+
+def read_binary_stl(filepath):
+    """Read a binary STL and return list of (normal, [v0, v1, v2]) tuples."""
+    with open(filepath, "rb") as f:
+        f.read(80)  # header
+        num_faces = struct.unpack("<I", f.read(4))[0]
+        triangles = []
+        for _ in range(num_faces):
+            n = struct.unpack("<3f", f.read(12))
+            v0 = struct.unpack("<3f", f.read(12))
+            v1 = struct.unpack("<3f", f.read(12))
+            v2 = struct.unpack("<3f", f.read(12))
+            f.read(2)  # attribute
+            triangles.append((n, [v0, v1, v2]))
+    return triangles
+
+
+def write_binary_stl(filepath, triangles):
+    """Write a list of (normal, [v0, v1, v2]) tuples as a binary STL."""
+    with open(filepath, "wb") as f:
+        f.write(b"\x00" * 80)
+        f.write(struct.pack("<I", len(triangles)))
+        for normal, verts in triangles:
+            f.write(struct.pack("<3f", *normal))
+            for v in verts:
+                f.write(struct.pack("<3f", *v))
+            f.write(struct.pack("<H", 0))
+
+
+def convert_ascii_stl_to_binary(filepath):
+    """Convert an ASCII STL file to binary STL in-place."""
+    triangles = []
+    with open(filepath, "r", errors="replace") as f:
+        normal = (0.0, 0.0, 0.0)
+        verts = []
+        for line in f:
+            line = line.strip()
+            if line.startswith("facet normal"):
+                parts = line.split()
+                normal = (float(parts[2]), float(parts[3]), float(parts[4]))
+                verts = []
+            elif line.startswith("vertex"):
+                parts = line.split()
+                verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            elif line.startswith("endfacet"):
+                if len(verts) == 3:
+                    triangles.append((normal, verts))
+    if not triangles:
+        return
+    write_binary_stl(filepath, triangles)
+
+
+def decimate_stl(filepath, max_faces=MAX_FACES):
+    """Decimate a binary STL in-place via quadratic edge collapse."""
+    face_count = get_stl_face_count(filepath)
+    if face_count <= max_faces:
+        return face_count, face_count
+
+    # Determine the target number of faces: reduce by the smallest power of 2 to go below max_faces
+    k = 1
+    while True:
+        target_faces = face_count // (2 ** k)
+        if target_faces < max_faces:
+            break
+        k += 1
+
+    import open3d as o3d
+    # Load mesh
+    mesh = o3d.io.read_triangle_mesh(filepath)
+    
+    # Decimate using quadratic edge collapse
+    decimated_mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target_faces)
+    
+    # Compute normals
+    decimated_mesh.compute_vertex_normals()
+    decimated_mesh.compute_triangle_normals()
+    
+    # Save back to filepath as binary STL
+    o3d.io.write_triangle_mesh(filepath, decimated_mesh, write_ascii=False)
+    
+    # Get actual final face count from the decimated mesh
+    final_face_count = len(decimated_mesh.triangles)
+    
+    return face_count, final_face_count
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +572,9 @@ def add_geom_attributes(geom_elem, geometry, origin_xyz, origin_rpy):
 
 def build_body_xml(parent_xml, link_name, links, children, joint_for_child,
                    materials, sites_for_body, is_root=False,
-                   body_pos="0 0 0", body_quat=None):
+                   body_pos="0 0 0", body_quat=None, leg_collision=False,
+                   leg_idx=None, num_legs=0, is_first_link=False,
+                   free_base=False):
     """
     Recursively build nested <body> elements for MuJoCo.
 
@@ -474,6 +589,11 @@ def build_body_xml(parent_xml, link_name, links, children, joint_for_child,
         is_root:         Whether this is the root body (no joint).
         body_pos:        The position of this body in parent frame.
         body_quat:       The orientation quaternion of this body (if non-identity).
+        leg_collision:   Whether leg collision grouping is enabled.
+        leg_idx:         The leg index (0-indexed) this body belongs to.
+        num_legs:        Total number of legs.
+        is_first_link:   Whether this body is the first link of a leg.
+        free_base:       Whether to add a freejoint to the root body.
     """
     link = links.get(link_name)
     if link is None:
@@ -487,7 +607,10 @@ def build_body_xml(parent_xml, link_name, links, children, joint_for_child,
         body_elem.set("quat", body_quat)
 
     # --- Joint (if not root) ---
-    if not is_root and link_name in joint_for_child:
+    if is_root and free_base:
+        fj_elem = ET.SubElement(body_elem, "freejoint")
+        fj_elem.set("name", "root_joint")
+    elif not is_root and link_name in joint_for_child:
         j = joint_for_child[link_name]
         if j.joint_type != "fixed":
             joint_elem = ET.SubElement(body_elem, "joint")
@@ -546,8 +669,39 @@ def build_body_xml(parent_xml, link_name, links, children, joint_for_child,
         if col.geometry:
             geom_elem = ET.SubElement(body_elem, "geom")
             add_geom_attributes(geom_elem, col.geometry, col.origin_xyz, col.origin_rpy)
-            geom_elem.set("contype", "2")
-            geom_elem.set("conaffinity", "1")
+            if leg_collision:
+                if leg_idx is not None:
+                    # Body belongs to leg `leg_idx`
+                    if is_first_link:
+                        # F_i: contype = 1 << (leg_idx + 2)
+                        # conaffinity = 1 | 2 | sum_{j != leg_idx} 1 << (j + 2) | sum_{j != leg_idx} 1 << (N + j + 2)
+                        contype = 1 << (leg_idx + 2)
+                        conaffinity = 1 | 2
+                        for j in range(num_legs):
+                            if j != leg_idx:
+                                conaffinity |= (1 << (j + 2))
+                                conaffinity |= (1 << (num_legs + j + 2))
+                    else:
+                        # R_i: contype = 1 << (num_legs + leg_idx + 2)
+                        # conaffinity = 1 | 2 | sum_{j != leg_idx} 1 << (j + 2) | sum_{j != leg_idx} 1 << (N + j + 2) | 1 << (2N + 2)
+                        contype = 1 << (num_legs + leg_idx + 2)
+                        conaffinity = 1 | 2 | (1 << (2 * num_legs + 2))
+                        for j in range(num_legs):
+                            if j != leg_idx:
+                                conaffinity |= (1 << (j + 2))
+                                conaffinity |= (1 << (num_legs + j + 2))
+                else:
+                    # Root / non-leg body: contype = 1 << (2N + 2)
+                    # conaffinity = 1 | 2 | sum_{j=0}^{N-1} 1 << (N + j + 2)
+                    contype = 1 << (2 * num_legs + 2)
+                    conaffinity = 1 | 2
+                    for j in range(num_legs):
+                        conaffinity |= (1 << (num_legs + j + 2))
+                geom_elem.set("contype", str(contype))
+                geom_elem.set("conaffinity", str(conaffinity))
+            else:
+                geom_elem.set("contype", "2")
+                geom_elem.set("conaffinity", "1")
 
     # --- Sites for loop-closure constraints ---
     if link_name in sites_for_body:
@@ -559,17 +713,27 @@ def build_body_xml(parent_xml, link_name, links, children, joint_for_child,
 
     # --- Recurse into children ---
     if link_name in children:
-        for child_joint, child_name in children[link_name]:
+        for idx, (child_joint, child_name) in enumerate(children[link_name]):
             child_pos = child_joint.origin_xyz
             child_quat = rpy_to_mujoco_quat(child_joint.origin_rpy)
+            
+            if is_root and leg_collision:
+                child_leg_idx = idx
+                child_is_first_link = True
+            else:
+                child_leg_idx = leg_idx
+                child_is_first_link = False
+
             build_body_xml(
                 body_elem, child_name, links, children, joint_for_child,
                 materials, sites_for_body,
                 is_root=False, body_pos=child_pos, body_quat=child_quat,
+                leg_collision=leg_collision, leg_idx=child_leg_idx,
+                num_legs=num_legs, is_first_link=child_is_first_link
             )
 
 
-def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/"):
+def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_collision=False, free_base=False, ground_plane=None):
     """
     Generate a MuJoCo XML ElementTree from parsed URDF data.
 
@@ -665,10 +829,26 @@ def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/"):
     light.set("pos", "0 -4 4")
     light.set("dir", "0 1 -1")
 
+    # Ground plane
+    if ground_plane is not None:
+        floor = ET.SubElement(worldbody, "geom")
+        floor.set("name", "floor")
+        floor.set("pos", f"0 0 {fmt(ground_plane)}")
+        floor.set("size", "0 0 0.05")
+        floor.set("type", "plane")
+        floor.set("material", "grid")
+        floor.set("condim", "3")
+
+    # Calculate number of legs from root children
+    root_children = children.get(root_link, []) if leg_collision else []
+    num_legs = len(root_children)
+
     # Build the kinematic tree (sites_for_body handles loop-closure sites)
     build_body_xml(
         worldbody, root_link, links, children, joint_for_child,
         materials, sites_for_body, is_root=True, body_pos="0 0 0",
+        leg_collision=leg_collision, leg_idx=None, num_legs=num_legs,
+        is_first_link=False, free_base=free_base
     )
 
     # --- <equality> (loop-closure connect constraints) ---
@@ -677,8 +857,11 @@ def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/"):
         for lc in loop_closures:
             connect = ET.SubElement(equality, "connect")
             connect.set("name", f"close_{lc.virtual_link_name}")
+            connect.set("body1", lc.parent1)
+            connect.set("body2", lc.parent2)
             connect.set("site1", lc.site1_name)
             connect.set("site2", lc.site2_name)
+            connect.set("anchor", lc.joint2.origin_xyz)
 
     # --- <actuator> (one position actuator per non-fixed, non-loop joint) ---
     actuated_joints = [
@@ -718,7 +901,7 @@ def prettify(elem):
     return '<?xml version="1.0" ?>\n' + "\n".join(lines) + "\n"
 
 
-def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/"):
+def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/", leg_collision=False, decimate_stl_flag=False, free_base=False, ground_plane=None):
     """
     Main conversion entry point.
 
@@ -726,6 +909,10 @@ def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/"):
         urdf_path:   Path to the input URDF file.
         output_path: Path for the output MJCF XML file (default: same dir, .xml).
         meshdir:     The meshdir path to set in <compiler>.
+        leg_collision: Whether leg collision grouping is enabled.
+        decimate_stl_flag: Whether to decimate STL files exceeding 200k faces.
+        free_base: Whether to add a freejoint to the root body.
+        ground_plane: The height of the ground plane to add to the worldbody (float), or None to omit.
     """
     if output_path is None:
         base = os.path.splitext(urdf_path)[0]
@@ -739,7 +926,26 @@ def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/"):
     print(f"  Joints     : {len(joints)}")
     print(f"  Materials  : {len(materials)}")
 
-    mujoco_xml = generate_mjcf(robot_name, links, joints, materials, meshdir=meshdir)
+    decimated_meshdir = meshdir
+    if decimate_stl_flag:
+        decimated_meshdir = meshdir.rstrip('/') + '_decimated'
+        if meshdir.endswith('/'):
+            decimated_meshdir += '/'
+
+    target_meshdir = decimated_meshdir if decimate_stl_flag else meshdir
+
+    # Ensure target_meshdir is resolved as a relative path to the output XML directory
+    xml_dir = os.path.dirname(os.path.abspath(output_path))
+    meshdir_abs = os.path.abspath(target_meshdir)
+    target_meshdir_rel = os.path.relpath(meshdir_abs, xml_dir)
+    if target_meshdir.endswith('/') and not target_meshdir_rel.endswith('/'):
+        target_meshdir_rel += '/'
+
+    mujoco_xml = generate_mjcf(
+        robot_name, links, joints, materials,
+        meshdir=target_meshdir_rel, leg_collision=leg_collision,
+        free_base=free_base, ground_plane=ground_plane
+    )
     xml_str = prettify(mujoco_xml)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -747,6 +953,47 @@ def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/"):
         f.write(xml_str)
 
     print(f"  Written    : {output_path}")
+
+    if decimate_stl_flag:
+        xml_dir = os.path.dirname(os.path.abspath(output_path))
+        orig_meshdir_abs = os.path.join(xml_dir, meshdir)
+        dest_meshdir_abs = os.path.join(xml_dir, decimated_meshdir)
+        os.makedirs(dest_meshdir_abs, exist_ok=True)
+
+        meshes = collect_meshes(links)
+        decimated_count = 0
+        copied_count = 0
+
+        for mesh_name, (filename, scale) in sorted(meshes.items()):
+            mesh_basename = os.path.basename(filename)
+            orig_filepath = os.path.join(orig_meshdir_abs, mesh_basename)
+            dest_filepath = os.path.join(dest_meshdir_abs, mesh_basename)
+
+            if os.path.isfile(orig_filepath):
+                # Copy the original file to the decimated folder
+                shutil.copy2(orig_filepath, dest_filepath)
+                if mesh_basename.lower().endswith('.stl'):
+                    # If it's ASCII, convert it to binary first in the destination folder
+                    if is_ascii_stl(dest_filepath):
+                        print(f"  Converting ASCII -> binary: {mesh_basename}")
+                        convert_ascii_stl_to_binary(dest_filepath)
+                    
+                    face_count = get_stl_face_count(dest_filepath)
+                    if face_count > MAX_FACES:
+                        orig_faces, final_faces = decimate_stl(dest_filepath, MAX_FACES)
+                        print(f"  Decimated {mesh_basename}: {orig_faces:,} -> {final_faces:,} faces")
+                        decimated_count += 1
+                    else:
+                        copied_count += 1
+                else:
+                    copied_count += 1
+            else:
+                print(f"  Warning: Mesh file not found at {orig_filepath}")
+
+        if decimated_count > 0 or copied_count > 0:
+            print(f"  Decimated {decimated_count} oversized STL file(s) to <= {MAX_FACES:,} faces in {decimated_meshdir}.")
+            print(f"  Copied {copied_count} file(s) without decimation to {decimated_meshdir}.")
+
     return output_path
 
 
@@ -763,9 +1010,21 @@ def main():
                         help="Path for the output MJCF XML (default: <input>.xml)")
     parser.add_argument("--meshdir", default="meshes/",
                         help="meshdir path for the MuJoCo <compiler> element (default: meshes/)")
+    parser.add_argument("--leg-collision", action="store_true",
+                        help="Create a separate collision group for each leg to avoid self-collisions within legs")
+    parser.add_argument("--decimate-stl", action="store_true",
+                        help="Decimate STL files exceeding 200k faces and store in {meshdir}_decimated")
+    parser.add_argument("--free-base", action="store_true",
+                        help="Add a freejoint to the root body (base link)")
+    parser.add_argument("--ground-plane", type=float, default=None,
+                        help="Add a ground plane to the worldbody at the specified height (float)")
     args = parser.parse_args()
 
-    convert_urdf_to_mjcf(args.input, args.output, args.meshdir)
+    convert_urdf_to_mjcf(
+        args.input, args.output, args.meshdir,
+        leg_collision=args.leg_collision, decimate_stl_flag=args.decimate_stl,
+        free_base=args.free_base, ground_plane=args.ground_plane
+    )
 
 
 if __name__ == "__main__":
