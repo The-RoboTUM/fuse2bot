@@ -733,7 +733,7 @@ def build_body_xml(parent_xml, link_name, links, children, joint_for_child,
             )
 
 
-def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_collision=False, free_base=False, ground_plane=None):
+def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_collision=False, free_base=False, ground_plane=None, isaac=False, actuate_joints=None):
     """
     Generate a MuJoCo XML ElementTree from parsed URDF data.
 
@@ -830,7 +830,7 @@ def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_c
     light.set("dir", "0 1 -1")
 
     # Ground plane
-    if ground_plane is not None:
+    if ground_plane is not None and isaac:
         floor = ET.SubElement(worldbody, "geom")
         floor.set("name", "floor")
         floor.set("pos", f"0 0 {fmt(ground_plane)}")
@@ -857,11 +857,13 @@ def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_c
         for lc in loop_closures:
             connect = ET.SubElement(equality, "connect")
             connect.set("name", f"close_{lc.virtual_link_name}")
-            connect.set("body1", lc.parent1)
-            connect.set("body2", lc.parent2)
+            if isaac:
+                connect.set("body1", lc.parent1)
+                connect.set("body2", lc.parent2)
             connect.set("site1", lc.site1_name)
             connect.set("site2", lc.site2_name)
-            connect.set("anchor", lc.joint2.origin_xyz)
+            if isaac:
+                connect.set("anchor", lc.joint2.origin_xyz)
 
     # --- <actuator> (one position actuator per non-fixed, non-loop joint) ---
     actuated_joints = [
@@ -870,6 +872,8 @@ def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_c
         and j.name not in loop_joint_names
         and j.parent in links and j.child in links
     ]
+    if actuate_joints is not None:
+        actuated_joints = [j for j in actuated_joints if j.name in actuate_joints]
     if actuated_joints:
         actuator = ET.SubElement(mujoco, "actuator")
         for j in actuated_joints:
@@ -878,8 +882,115 @@ def generate_mjcf(robot_name, links, joints, materials, meshdir="meshes/", leg_c
             act.set("joint", j.name)
             act.set("ctrlrange", f"{fmt(j.limit_lower)} {fmt(j.limit_upper)}")
             act.set("ctrllimited", "true")
+            
+            if actuate_joints and j.name in actuate_joints:
+                params = actuate_joints[j.name]
+                if "kp" in params:
+                    act.set("kp", fmt(params["kp"]))
+                if "kd" in params:
+                    act.set("kv", fmt(params["kd"]))
+                if "fmin" in params and "fmax" in params:
+                    act.set("forcerange", f"{fmt(params['fmin'])} {fmt(params['fmax'])}")
+                    act.set("forcelimited", "true")
 
     return mujoco
+
+
+def get_qpos_and_ctrl_values(links, joints, free_base, actuate_joints=None):
+    """
+    Recursively construct the default qpos and ctrl values for keyframes.
+    """
+    (root_link, children, joint_for_child,
+     loop_closures, sites_for_body) = build_kinematic_tree(links, joints)
+
+    loop_joint_names = set()
+    for lc in loop_closures:
+        loop_joint_names.add(lc.joint1.name)
+        loop_joint_names.add(lc.joint2.name)
+
+    visited = set()
+    qpos_joint_names = []
+    def traverse_joints(link_name):
+        if link_name in visited:
+            return
+        visited.add(link_name)
+        if link_name in children:
+            for child_joint, child_name in children[link_name]:
+                if child_joint.joint_type != "fixed":
+                    qpos_joint_names.append(child_joint.name)
+                traverse_joints(child_name)
+
+    traverse_joints(root_link)
+
+    qpos_values = []
+    if free_base:
+        # A freejoint adds 7 coordinates (3 pos, 4 orientation quaternion).
+        # Initialize identity quaternion: w=1, x=0, y=0, z=0.
+        qpos_values.extend([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+
+    for name in qpos_joint_names:
+        val = 0.0
+        if actuate_joints and name in actuate_joints:
+            val = actuate_joints[name].get("default_qpos", 0.0)
+        qpos_values.append(val)
+
+    actuated_joints = [
+        j for j in joints
+        if j.joint_type in ("revolute", "continuous", "prismatic")
+        and j.name not in loop_joint_names
+        and j.parent in links and j.child in links
+    ]
+    if actuate_joints is not None:
+        actuated_joints = [j for j in actuated_joints if j.name in actuate_joints]
+
+    ctrl_values = []
+    for j in actuated_joints:
+        val = 0.0
+        if actuate_joints and j.name in actuate_joints:
+            val = actuate_joints[j.name].get("default_qpos", 0.0)
+        ctrl_values.append(val)
+
+    return qpos_values, ctrl_values
+
+
+def generate_scene_xml(out_filename_xml, qpos_list, ctrl_list, ground_plane_height=None):
+    """
+    Generate the scene XML content as a string.
+    """
+    qpos_str = " ".join(fmt(v) for v in qpos_list)
+    ctrl_str = " ".join(fmt(v) for v in ctrl_list)
+    
+    pos_val = f"0 0 {fmt(ground_plane_height)}" if ground_plane_height is not None else "0 0 0"
+    
+    xml_content = f"""<?xml version="1.0" ?>
+<mujoco model="scene">
+  <option timestep="0.0002"/>
+
+  <include file="{out_filename_xml}"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" pos="{pos_val}" type="plane" material="groundplane"/>
+  </worldbody>
+
+  <keyframe>
+    <key name="zero" qpos="{qpos_str}" ctrl="{ctrl_str}"/>
+  </keyframe>
+</mujoco>
+"""
+    return xml_content
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +1012,7 @@ def prettify(elem):
     return '<?xml version="1.0" ?>\n' + "\n".join(lines) + "\n"
 
 
-def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/", leg_collision=False, decimate_stl_flag=False, free_base=False, ground_plane=None):
+def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/", leg_collision=False, decimate_stl_flag=False, free_base=False, ground_plane=None, isaac=False, actuate_joints_file=None):
     """
     Main conversion entry point.
 
@@ -913,6 +1024,7 @@ def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/", leg_col
         decimate_stl_flag: Whether to decimate STL files exceeding 200k faces.
         free_base: Whether to add a freejoint to the root body.
         ground_plane: The height of the ground plane to add to the worldbody (float), or None to omit.
+        actuate_joints_file: Path to a text file containing one joint name per line to actuate (default: None, actuate all).
     """
     if output_path is None:
         base = os.path.splitext(urdf_path)[0]
@@ -941,10 +1053,35 @@ def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/", leg_col
     if target_meshdir.endswith('/') and not target_meshdir_rel.endswith('/'):
         target_meshdir_rel += '/'
 
+    actuate_joints = None
+    if actuate_joints_file:
+        if not os.path.isfile(actuate_joints_file):
+            print(f"Error: Actuate joints file not found: {actuate_joints_file}")
+            sys.exit(1)
+        actuate_joints = {}
+        with open(actuate_joints_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                joint_name = parts[0]
+                params = {}
+                for part in parts[1:]:
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        try:
+                            params[k] = float(v)
+                        except ValueError:
+                            params[k] = v
+                actuate_joints[joint_name] = params
+        print(f"  Only actuating joints: {sorted(list(actuate_joints.keys()))}")
+
     mujoco_xml = generate_mjcf(
         robot_name, links, joints, materials,
         meshdir=target_meshdir_rel, leg_collision=leg_collision,
-        free_base=free_base, ground_plane=ground_plane
+        free_base=free_base, ground_plane=ground_plane,
+        isaac=isaac, actuate_joints=actuate_joints
     )
     xml_str = prettify(mujoco_xml)
 
@@ -953,6 +1090,22 @@ def convert_urdf_to_mjcf(urdf_path, output_path=None, meshdir="meshes/", leg_col
         f.write(xml_str)
 
     print(f"  Written    : {output_path}")
+
+    if not isaac:
+        scene_dir = os.path.dirname(os.path.abspath(output_path))
+        scene_filename = f"scene_{os.path.splitext(os.path.basename(output_path))[0]}.xml"
+        scene_path = os.path.join(scene_dir, scene_filename)
+        
+        qpos_list, ctrl_list = get_qpos_and_ctrl_values(links, joints, free_base, actuate_joints)
+        scene_xml_str = generate_scene_xml(
+            os.path.basename(output_path),
+            qpos_list,
+            ctrl_list,
+            ground_plane_height=ground_plane
+        )
+        with open(scene_path, "w", encoding="utf-8") as f:
+            f.write(scene_xml_str)
+        print(f"  Written Scene: {scene_path}")
 
     if decimate_stl_flag:
         xml_dir = os.path.dirname(os.path.abspath(output_path))
@@ -1018,12 +1171,17 @@ def main():
                         help="Add a freejoint to the root body (base link)")
     parser.add_argument("--ground-plane", type=float, default=None,
                         help="Add a ground plane to the worldbody at the specified height (float)")
+    parser.add_argument("--isaac", action="store_true",
+                        help="Include body1, body2, and anchor attributes on <connect> equality elements for Isaac Sim compatibility")
+    parser.add_argument("--actuate-joints", default=None,
+                        help="Path to a text file containing joint names (one per line) to actuate")
     args = parser.parse_args()
 
     convert_urdf_to_mjcf(
         args.input, args.output, args.meshdir,
         leg_collision=args.leg_collision, decimate_stl_flag=args.decimate_stl,
-        free_base=args.free_base, ground_plane=args.ground_plane
+        free_base=args.free_base, ground_plane=args.ground_plane,
+        isaac=args.isaac, actuate_joints_file=args.actuate_joints
     )
 
 

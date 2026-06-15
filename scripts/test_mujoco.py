@@ -19,7 +19,7 @@ def main():
     model = mujoco.MjModel.from_xml_path(args.xml)
     data = mujoco.MjData(model)
 
-    mujoco.viewer.launch(model, data)
+    mujoco.viewer.launch(model, data, show_left_ui=True, show_right_ui=True)
 
 
 if __name__ == "__main__":

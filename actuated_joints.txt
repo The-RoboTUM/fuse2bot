@@ -1,0 +1,10 @@
+r0_acetabulofemoral_roll kp=100 kd=10 fmin=-100 fmax=100
+l0_acetabulofemoral_roll kp=100 kd=10 fmin=-100 fmax=100
+r1_acetabulofemoral_lateral kp=100 kd=10 fmin=-100 fmax=100
+l1_acetabulofemoral_lateral kp=100 kd=10 fmin=-100 fmax=100
+r2_pseudo_acetabulofemoral_flexion kp=100 kd=10 fmin=-100 fmax=100
+l2_pseudo_acetabulofemoral_flexion kp=100 kd=10 fmin=-100 fmax=100
+rp1_pantograph kp=128000 kd=10 fmin=-100000 fmax=100000 default_qpos=0.04
+lp1_pantograph kp=128000 kd=10 fmin=-100000 fmax=100000 default_qpos=0.04
+r8_knee_flexor kp=100 kd=10 fmin=-100 fmax=100
+l8_knee_flexor kp=100 kd=10 fmin=-100 fmax=100
